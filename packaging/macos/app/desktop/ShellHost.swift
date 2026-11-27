@@ -29,9 +29,11 @@ func pageOrigin(_ url: URL?) -> String? {
 
 extension AppDelegate {
     var prefs: [String: Any] { snapshot["preferences"] as? [String: Any] ?? [:] }
-    var windowPrefs: [String: Any] { prefs["window"] as? [String: Any] ?? [:] }
-    var devTools: Bool { windowPrefs["developerTools"] as? Bool == true || UserDefaults.standard.bool(forKey: "WebInspector") }
-    var closeToTray: Bool { windowPrefs["closeToTray"] as? Bool ?? true }
+    var shellWindowPrefs: [String: Any] { prefs["window"] as? [String: Any] ?? [:] }
+    var devTools: Bool {
+        windowPrefs.developerTools ?? (shellWindowPrefs["developerTools"] as? Bool == true || UserDefaults.standard.bool(forKey: "WebInspector"))
+    }
+    var closeToTray: Bool { windowPrefs.closeToTray ?? (shellWindowPrefs["closeToTray"] as? Bool ?? true) }
     var notices: Bool { (prefs["notifications"] as? [String: Any])?["enabled"] as? Bool ?? true }
     var activeHome: [String: Any] { snapshot["home"] as? [String: Any] ?? [:] }
     var assets: URL { Bundle.main.resourceURL!.appendingPathComponent("desktop-assets") }
@@ -112,7 +114,7 @@ extension AppDelegate {
         if openWhenReady, page == nil, (activeHome["local"] as? [String: Any])?["status"] as? String == "error" { openSettings("home") }
         if #available(macOS 13.3, *) {
             webView?.isInspectable = devTools
-            for window in popups.keys { (window.contentView as? WKWebView)?.isInspectable = devTools }
+            for window in popups.keys { (window as? PocketNativeWindow)?.chrome?.webView.isInspectable = devTools }
         }
     }
 
@@ -120,16 +122,24 @@ extension AppDelegate {
         sessionBridge.reset(keepUnboundNewSession: keepUnboundNewSession)
         for extra in Array(popups.keys) {
             if let observer = popups.removeValue(forKey: extra) { NotificationCenter.default.removeObserver(observer) }
-            (extra.contentView as? WKWebView)?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")
+            let view = (extra as? PocketNativeWindow)?.chrome?.webView
+            clearPageHandlers(view)
+            extra.delegate = nil
             extra.close()
         }
         webView?.stopLoading()
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")
+        clearPageHandlers(webView)
         window?.delegate = nil
         window?.close()
         window = nil
         webView = nil
         notice = nil
+    }
+
+    func clearPageHandlers(_ view: WKWebView?) {
+        let messages = view?.configuration.userContentController
+        messages?.removeScriptMessageHandler(forName: "pocketWindow")
+        messages?.removeScriptMessageHandler(forName: "pocket")
     }
 
     func shellAction(_ action: String, data: Any? = nil) {
@@ -252,6 +262,7 @@ extension AppDelegate {
     func pageNotice(_ text: String?) {
         notice?.arrangedSubviews.first.flatMap { $0 as? NSTextField }?.stringValue = text ?? ""
         notice?.isHidden = text == nil
+        (window as? PocketNativeWindow)?.chrome?.needsLayout = true
     }
 
     func pageConfig(_ page: ShellPage) -> WKWebViewConfiguration {
@@ -260,6 +271,10 @@ extension AppDelegate {
         configuration.applicationNameForUserAgent = "PiPocketMac/\(appVersion)"
         configuration.preferences.isElementFullscreenEnabled = true
         if page.bridge { sessionBridge.install(configuration, address: page.address) }
+        if page.bridge, let origin = pageOrigin(page.address) {
+            installWindowScript(in: configuration.userContentController, origin: origin,
+                initial: "{side:'none',width:0,height:0,tint:null,nativeDragContext:true}")
+        }
         return configuration
     }
 

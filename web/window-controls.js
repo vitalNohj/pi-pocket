@@ -202,7 +202,11 @@ function update() {
     const next = new Map();
 
     for (const element of document.querySelectorAll(`${BARS}, ${PUSHED}`)) {
-        if (!element.checkVisibility({ visibilityProperty: true })) {
+        // The native macOS app also runs on WebKit versions from before checkVisibility().
+        if (!(
+            element.checkVisibility?.({ visibilityProperty: true }) ??
+            getComputedStyle(element).visibility === "visible"
+        )) {
             continue;
         }
 
@@ -328,3 +332,33 @@ if (overlay) {
 
     update();
 }
+
+// Native WebViews move the window after an actual hit on an empty bar. Do not approximate a whole band of the
+// page as draggable: that would steal clicks from tabs, sheets, and controls that appear over the band.
+window.__piPocketWindow?.ready((event) => {
+    const target = event.target;
+
+    if (
+        !(target instanceof Element) ||
+        target.closest(
+            "a, button, input, select, textarea, label, summary, [role], [tabindex], [contenteditable], .title, .resize-handle",
+        )
+    ) {
+        return false;
+    }
+
+    if (target.closest(`${BARS}, .sessions-head`)) {
+        return true;
+    }
+
+    const strip = drag?.getBoundingClientRect();
+
+    return (
+        strip &&
+        target.matches("html, body, #app, .layout") &&
+        event.clientX >= strip.left &&
+        event.clientX < strip.right &&
+        event.clientY >= strip.top &&
+        event.clientY < strip.bottom
+    );
+});

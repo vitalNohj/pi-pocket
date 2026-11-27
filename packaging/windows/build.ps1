@@ -130,12 +130,14 @@ if (-not (Test-Path -LiteralPath $interopFacade -PathType Leaf)) {
 }
 $desktopSources = @(Get-ChildItem (Join-Path $PSScriptRoot "Desktop") -Filter '*.cs' -File | ForEach-Object FullName)
 $bootstrap = Join-Path $PSScriptRoot "..\desktop\bridge\bootstrap.js"
+$windowScript = Join-Path $PSScriptRoot '..\desktop\window\host.js'
 # The .NET 4.8 targeting pack's fallback facade can have a newer version than the WinRT contract reference.
 $compile = @(
     '/nologo', '/optimize+', '/platform:x64', '/warnaserror+', '/warnaserror-:1701', '/codepage:65001',
     '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll', '/r:System.Xml.Linq.dll',
     '/r:System.Runtime.WindowsRuntime.dll', "/r:$runtimeFacade", "/r:$interopFacade", "/r:$webCore", "/r:$webForms",
-    "/resource:$bootstrap,PocketBridge.js", $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
+    "/resource:$bootstrap,PocketBridge.js", "/resource:$windowScript,PiPocket.Window.js",
+    $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
 ) + $contractReferences + $desktopSources
 & $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `
     "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" @compile

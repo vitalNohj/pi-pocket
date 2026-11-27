@@ -44,7 +44,7 @@
     <choice
         id="login"
         title="Start Pi Pocket when I sign in"
-        description="Starts Pi Pocket in the menu bar each time you sign in, without a window."
+        description="Starts Pi Pocket each time you sign in. The app's Start hidden option controls whether a window opens."
         start_selected="loginItemOn()">
         <pkg-ref id="io.github.tannermidd.pi-pocket.login"/>
     </choice>

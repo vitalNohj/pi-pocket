@@ -153,7 +153,7 @@ namespace PiPocket
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.OleRequired();
-                TrayApp app = new TrayApp(hidden, newEvent);
+                TrayApp app = new TrayApp(hidden, Array.IndexOf(args, "--login") >= 0, newEvent);
                 if (newSession) { newEvent.Set(); }
                 Application.Run(app);
                 GC.KeepAlive(mutex);
@@ -283,14 +283,14 @@ namespace PiPocket
         Icon dottedIcon;
         int badge;
 
-        public TrayApp(bool hidden, EventWaitHandle newEvent)
+        public TrayApp(bool hidden, bool login, EventWaitHandle newEvent)
         {
             string data = Environment.GetEnvironmentVariable("PI_POCKET_DIR");
             dataDir = string.IsNullOrEmpty(data)
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".pi-pocket")
                 : Path.GetFullPath(data);
             logFile = Path.Combine(appDir, "launcher.log");
-            openWhenReady = !hidden;
+            openWhenReady = !hidden && !(login && WindowPrefs.startHidden);
             // The handle that BeginInvoke needs, made on this thread.
             ui.CreateControl();
             GC.KeepAlive(ui.Handle);
@@ -311,6 +311,7 @@ namespace PiPocket
                 }
             };
             tray.Visible = true;
+            StartWindowActions();
 
             openEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.OpenEventName);
             quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, Program.QuitEventName);
@@ -541,6 +542,7 @@ namespace PiPocket
 
         void Stop()
         {
+            if (windowHotkey != null) { windowHotkey.Dispose(); windowHotkey = null; }
             if (controller != null) { controller.Dispose(); }
             if (settings != null) { settings.Dispose(); }
             CloseWindows();
@@ -657,13 +659,30 @@ namespace PiPocket
             }
         }
 
+        PocketWindow MakeExtraWindow()
+        {
+            PocketWindow made = new PocketWindow(this, pageAddress, baseIcon, null);
+            popups.Add(made);
+            made.Activated += delegate { if (popups.Remove(made)) { popups.Add(made); } };
+            made.FormClosed += delegate
+            {
+                int generation = pageGeneration;
+                OnUi(delegate { if (generation == pageGeneration && window == null && popups.Count == 0 && settings == null) { Quit(); } });
+            };
+            made.Disposed += delegate { popups.Remove(made); };
+            made.ShowWindow();
+            return made;
+        }
+
+        PocketWindow ActivePocketWindow
+        {
+            get { return Form.ActiveForm as PocketWindow ?? window ?? (popups.Count > 0 ? popups[popups.Count - 1] : null); }
+        }
+
         async Task NewSessionWindow()
         {
             if (!ready || quitting) { return; }
-            PocketWindow made = new PocketWindow(this, pageAddress, baseIcon, null);
-            popups.Add(made);
-            made.Disposed += delegate { popups.Remove(made); };
-            made.ShowWindow();
+            PocketWindow made = MakeExtraWindow();
             try
             {
                 await made.Initialize(SessionWebProfile);
@@ -681,7 +700,7 @@ namespace PiPocket
                 return;
             }
 
-            if (!PocketWindow.IsServerAddress(args.Uri, url))
+            if (!PocketWindow.IsServerAddress(args.Uri, url) || WindowPrefs.externalPages)
             {
                 if (args.IsUserInitiated)
                 {
@@ -696,10 +715,7 @@ namespace PiPocket
 
             try
             {
-                popup = new PocketWindow(this, pageAddress, baseIcon, null);
-                popups.Add(popup);
-                popup.Disposed += delegate { popups.Remove(popup); };
-                popup.ShowWindow();
+                popup = MakeExtraWindow();
                 await popup.Initialize(SessionWebProfile);
 
                 if (!quitting && !popup.IsDisposed)

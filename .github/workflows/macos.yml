@@ -267,8 +267,8 @@ jobs:
                   plutil -lint "$AGENT"
                   plutil -p "$AGENT"
                   opens="$(plutil -extract ProgramArguments.3 raw "$AGENT")"
-                  if [ "$opens" != "$BUNDLE" ] || [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" != --hidden ]; then
-                      echo "The sign-in item opens $opens, not Pi Pocket.app with --hidden"
+                  if [ "$opens" != "$BUNDLE" ] || [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" != --login ]; then
+                      echo "The sign-in item opens $opens, not Pi Pocket.app with --login"
                       exit 1
                   fi
 
@@ -399,6 +399,18 @@ jobs:
                       exit 1
                   fi
 
+            - name: Check native window and download fixtures
+              timeout-minutes: 5
+              run: bash test/desktop/window-macos.sh
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: macos-window-evidence-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/window-evidence/
+                  if-no-files-found: ignore
+                  retention-days: 14
+
             - name: An older package makes the app show its error, and an install puts its own back
               run: |
                   cp "$MANIFEST" "$RUNNER_TEMP/package.json"
@@ -471,6 +483,7 @@ jobs:
 
             - name: Start the sign-in item and check that it answers HTTP
               run: |
+                  printf '%s\n' '{"titleBar":"seamless","startHidden":true}' > "$APP/desktop/window.json"
                   launchctl bootstrap "gui/$(id -u)" "$AGENT"
                   code=000
                   for try in $(seq 1 180); do

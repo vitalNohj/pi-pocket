@@ -1,6 +1,5 @@
 #!/bin/bash
-# Turns the start of Pi Pocket at sign-in on or off: a LaunchAgent that opens Pi Pocket.app in the menu bar only
-# (--hidden) from the next sign-in.
+# Turns the start of Pi Pocket at sign-in on or off. --login makes the app read its Start hidden preference.
 #
 #   login-item.sh on | off | status
 set -u
@@ -51,7 +50,7 @@ case "${1:-}" in
         <string>-a</string>
         <string>$(xml "$app")</string>
         <string>--args</string>
-        <string>--hidden</string>
+        <string>--login</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -68,7 +67,7 @@ EOF
         fi
 
         mv -f "$PLIST.tmp" "$PLIST"
-        echo "Pi Pocket starts in the menu bar when you sign in, from the next sign-in."
+        echo "Pi Pocket starts when you sign in, from the next sign-in."
         ;;
     off)
         /bin/launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null

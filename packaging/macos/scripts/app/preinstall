@@ -34,5 +34,19 @@ for bundle in "$HOME/Applications/Pi Pocket.app" "$APP/Pi Pocket.app"; do
     fi
 done
 
+# Record install versus upgrade before replacing the payload. A repair must not reset a selected title bar.
+if [ ! -e "$APP/desktop/window.json" ]; then
+    title=seamless
+    hidden=false
+    agent="$HOME/Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist"
+    if [ -f "$APP/pi-pocket" ]; then
+        title=system
+    fi
+    if [ "$(/usr/bin/plutil -extract ProgramArguments.5 raw "$agent" 2>/dev/null)" = --hidden ]; then
+        hidden=true
+    fi
+    mkdir -p "$APP/desktop" && printf '{"titleBar":"%s","startHidden":%s}\n' "$title" "$hidden" > "$APP/desktop/window.json" || exit 1
+fi
+
 rm -rf "$APP/node" "$APP/Pi Pocket.app" "$APP/Pi Pocket (console).app" "$APP/Pi Pocket at sign-in.command" \
     "$APP/app.new" "$APP/app.old" "$APP/install-app.mjs" "$APP"/pi-pocket-*.tgz

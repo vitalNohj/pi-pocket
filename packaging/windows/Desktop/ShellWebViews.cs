@@ -42,17 +42,15 @@ namespace PiPocket
                 if (view.IsDisposed) { return; }
                 stage = "controller";
                 WriteWebViewLog("Creating the " + profile + " WebView2 controller.");
-                if (profile == ShellWebProfile.Local)
+                CoreWebView2ControllerOptions options = environment.CreateCoreWebView2ControllerOptions();
+                if (profile != ShellWebProfile.Local) { options.ProfileName = profile.ToString(); }
+                options.IsInPrivateModeEnabled = profile == ShellWebProfile.Settings;
+                if (profile != ShellWebProfile.Settings)
                 {
-                    await view.EnsureCoreWebView2Async(environment);
+                    try { options.AllowHostInputProcessing = true; }
+                    catch (NotImplementedException) { /* Older runtimes still have the menus. */ }
                 }
-                else
-                {
-                    CoreWebView2ControllerOptions options = environment.CreateCoreWebView2ControllerOptions();
-                    options.ProfileName = profile.ToString();
-                    options.IsInPrivateModeEnabled = profile == ShellWebProfile.Settings;
-                    await view.EnsureCoreWebView2Async(environment, options);
-                }
+                await view.EnsureCoreWebView2Async(environment, options);
                 WriteWebViewLog("The " + profile + " WebView2 controller is ready.");
             }
             catch (Exception error)

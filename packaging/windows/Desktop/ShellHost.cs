@@ -156,7 +156,7 @@ namespace PiPocket
 
         async Task<object> HandleOperation(string action, object data)
         {
-            PocketWindow front = Form.ActiveForm as PocketWindow ?? window;
+            PocketWindow front = ActivePocketWindow;
             switch (action)
             {
                 case "settings.open": OpenSettings(ShellWire.Text(data, "section")); break;
@@ -171,7 +171,7 @@ namespace PiPocket
                 case "window.zoomIn": if (front != null) { front.Zoom(0.1); } break;
                 case "window.zoomOut": if (front != null) { front.Zoom(-0.1); } break;
                 case "window.actualSize": if (front != null) { front.Zoom(0); } break;
-                case "window.devTools": if (DeveloperTools && front != null && front.Browser != null) { front.Browser.OpenDevToolsWindow(); } break;
+                case "window.devTools": if (NativeDeveloperTools && front != null && front.Browser != null) { front.Browser.OpenDevToolsWindow(); } break;
                 case "window.fullScreen": if (front != null) { front.ToggleFullScreen(); } break;
                 case "window.minimize": if (front != null) { front.WindowState = FormWindowState.Minimized; } break;
                 case "window.close": if (Form.ActiveForm != null) { Form.ActiveForm.Close(); } break;

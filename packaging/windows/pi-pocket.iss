@@ -48,6 +48,8 @@ Uninstallable=no
 CreateUninstallRegKey=no
 #else
 OutputBaseFilename=Pi-Pocket-Setup-{#AppVersion}
+; Startup may have changed in the app or Windows since Setup last ran.
+UsePreviousTasks=no
 #endif
 SetupIconFile=pi-pocket.ico
 UninstallDisplayIcon={app}\Pi Pocket.exe
@@ -68,9 +70,9 @@ SignedUninstaller=yes
 Name: startup; Description: "Start Pi Pocket when I sign in to Windows"; Flags: unchecked
 
 [InstallDelete]
+Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Check: RemoveStartupShortcut
 ; An older Node.js must not leave files behind in the new one.
 Type: filesandordirs; Name: "{app}\node"
-Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Tasks: not startup
 ; The package goes in whole, unless a newer one that the app updated to stays. An install that stops after this leaves
 ; no package, never an older one: the app then says to run Setup again.
 Type: filesandordirs; Name: "{app}\app"; Check: ReplaceApp
@@ -97,9 +99,11 @@ Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "3482E279-4BAB-4932-BF9D-CE95126FE324"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
-Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--hidden"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
+Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Check: InstallStartupShortcut
 
 [Registry]
+; Selecting startup also enables a shortcut that Windows previously disabled.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"; ValueType: none; ValueName: "Pi Pocket.lnk"; Flags: deletevalue; Check: InstallStartupShortcut
 ; Shell activation and the URL association both belong to this user, not to an administrator's machine.
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32"; ValueType: string; ValueData: """{app}\Pi Pocket.exe"" --toast-server"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}"; Flags: uninsdeletekeyifempty
@@ -125,6 +129,7 @@ Type: files; Name: "{app}\launcher.old.log"
 Type: files; Name: "{app}\window-bounds.txt"
 Type: files; Name: "{app}\desktop-upgrade.txt"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\desktop"
+Type: files; Name: "{autostartup}\Pi Pocket.lnk"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\WebView2 profile"
 ; Also remove the separate profile that older installs and the missing-Runtime fallback use.
 Type: filesandordirs; Name: "{app}\Edge profile"
@@ -146,6 +151,10 @@ end;
 #else
 var
   KeepApp: Boolean;
+  UpgradingDesktop: Boolean;
+  LegacyStartup: Boolean;
+  StartupDefaultShown: Boolean;
+  InstallStartup: Boolean;
 
 function NextPart(var Text: String): String;
 var
@@ -369,6 +378,43 @@ begin
   StopPiPocket;
 end;
 
+function StartupEnabled: Boolean;
+var
+  State: AnsiString;
+begin
+  Result := FileExists(ExpandConstant('{autostartup}\Pi Pocket.lnk'));
+  if not Result then
+    exit;
+  if RegQueryBinaryValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder',
+    'Pi Pocket.lnk', State) and (Length(State) > 0) then
+    Result := (Ord(State[1]) and 1) = 0;
+end;
+
+function StartupTasksSupplied: Boolean;
+var
+  I: Integer;
+  Arg: String;
+begin
+  Result := True;
+  for I := 1 to ParamCount do
+  begin
+    Arg := Uppercase(ParamStr(I));
+    if (Pos('/TASKS=', Arg) = 1) or (Pos('/MERGETASKS=', Arg) = 1) or (Pos('/LOADINF=', Arg) = 1) then
+      exit;
+  end;
+  Result := False;
+end;
+
+function InstallStartupShortcut: Boolean;
+begin
+  Result := InstallStartup;
+end;
+
+function RemoveStartupShortcut: Boolean;
+begin
+  Result := not InstallStartup;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Installed: String;
@@ -387,7 +433,14 @@ begin
     exit;
   end;
 
-  if FileExists(ExpandConstant('{app}\Pi Pocket.exe')) and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
+  UpgradingDesktop := FileExists(ExpandConstant('{app}\Pi Pocket.exe'));
+  LegacyStartup := UpgradingDesktop and StartupEnabled;
+  { Silent Setup does not show the task page. Unless it got an explicit choice, keep the Windows state. }
+  if WizardSilent and not StartupTasksSupplied then
+    InstallStartup := LegacyStartup
+  else
+    InstallStartup := WizardIsTaskSelected('startup');
+  if UpgradingDesktop and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
     SaveStringToFile(ExpandConstant('{app}\desktop-upgrade.txt'), 'Previous desktop install.', False);
 
   Installed := InstalledAppVersion;
@@ -413,23 +466,45 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Folder, State, TitleBar: String;
 begin
-  if CurStep = ssPostInstall then
+  if CurStep <> ssPostInstall then
+    exit;
+
+  Folder := ExpandConstant('{localappdata}\Pi Pocket\desktop');
+  State := AddBackslash(Folder) + 'window.json';
+  if not FileExists(State) and ForceDirectories(Folder) then
   begin
-    SaveStringToFile(ExpandConstant('{app}\app\setup-finished.txt'),
-      'Pi Pocket Setup {#AppVersion} put the package in this folder in place.' + #13#10, False);
-    { Do not replace an existing handler, for example Pi Pocket GUI. The native app is in Default apps either way. }
-    if not RegKeyExists(HKCR, 'pi-pocket') then
-    begin
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', '', 'URL:Pi Pocket Desktop link');
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol', '');
-      RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', ProtocolCommand);
-    end;
+    TitleBar := 'seamless';
+    if UpgradingDesktop then
+      TitleBar := 'system';
+    if LegacyStartup then
+      SaveStringToFile(State, '{"titleBar":"' + TitleBar + '","startHidden":true}', False)
+    else
+      SaveStringToFile(State, '{"titleBar":"' + TitleBar + '"}', False);
+  end;
+
+  SaveStringToFile(ExpandConstant('{app}\app\setup-finished.txt'),
+    'Pi Pocket Setup {#AppVersion} put the package in this folder in place.' + #13#10, False);
+  { Do not replace an existing handler, for example Pi Pocket GUI. The native app is in Default apps either way. }
+  if not RegKeyExists(HKCR, 'pi-pocket') then
+  begin
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', '', 'URL:Pi Pocket Desktop link');
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket', 'URL Protocol', '');
+    RegWriteStringValue(HKCU, 'Software\Classes\pi-pocket\shell\open\command', '', ProtocolCommand);
   end;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if (CurPageID = wpSelectTasks) and not StartupDefaultShown then
+  begin
+    StartupDefaultShown := True;
+    if not StartupTasksSupplied and FileExists(AddBackslash(WizardDirValue) + 'Pi Pocket.exe') and StartupEnabled then
+      WizardSelectTasks('startup');
+  end;
+
   if (CurPageID = wpFinished) and not GitBashFound then
     WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
       'Pi''s bash tool needs Git for Windows (https://git-scm.com/download/win), unless bash.exe is on your PATH.';

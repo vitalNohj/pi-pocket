@@ -54,7 +54,7 @@ namespace PiPocket
 
         public bool MenuEnabled(string action)
         {
-            if (action == "window.devTools") { return DeveloperTools; }
+            if (action == "window.devTools") { return NativeDeveloperTools; }
             if (action == "home.local.restart") { return localPage && ShellWire.Flag(ShellWire.Get(ShellWire.Get(snapshot, "home"), "local"), "verified"); }
             return true;
         }
@@ -62,12 +62,10 @@ namespace PiPocket
 
     sealed partial class PocketWindow
     {
-        readonly MenuStrip desktopMenu = new MenuStrip { Dock = DockStyle.Top, Visible = false };
+        readonly MenuStrip desktopMenu = new MenuStrip { Dock = DockStyle.None, Visible = false };
         readonly Label remoteNotice = new Label { AutoSize = true, Padding = new Padding(8, 5, 8, 5) };
-        readonly ToolStrip shellStrip = new ToolStrip { Dock = DockStyle.Top, Visible = false, GripStyle = ToolStripGripStyle.Hidden };
+        readonly ToolStrip shellStrip = new ToolStrip { Dock = DockStyle.None, Visible = false, GripStyle = ToolStripGripStyle.Hidden };
         bool altMenu;
-        bool fullScreen;
-        FormWindowState normalState;
 
         void AddDesktopMenus()
         {
@@ -128,8 +126,7 @@ namespace PiPocket
 
         public void ApplyShellPreferences()
         {
-            desktopMenu.Visible = !fullScreen && (host.ShowMenuBar || altMenu);
-            if (Browser != null) { Browser.Settings.AreDevToolsEnabled = host.DeveloperTools; }
+            ApplyWindowPreferences();
             foreach (ToolStripMenuItem group in desktopMenu.Items)
             {
                 foreach (ToolStripItem item in group.DropDownItems)
@@ -143,17 +140,23 @@ namespace PiPocket
         public void ShowPageNotice(string message)
         {
             remoteNotice.Text = message ?? "";
-            shellStrip.Visible = !fullScreen && message != null;
+            LayoutChrome();
         }
 
         void HideAltMenu()
         {
             altMenu = false;
-            desktopMenu.Visible = !fullScreen && host.ShowMenuBar;
+            LayoutChrome();
         }
 
         protected override bool ProcessCmdKey(ref Message message, Keys key)
         {
+            if (key == (Keys.Alt | Keys.Space))
+            {
+                // Keep the OS window menu even when WebView2 has keyboard focus.
+                SendMessage(Handle, 0x0112, new IntPtr(0xF100), new IntPtr(' '));
+                return true;
+            }
             foreach (ToolStripMenuItem group in desktopMenu.Items)
             {
                 foreach (ToolStripItem item in group.DropDownItems)
@@ -167,26 +170,6 @@ namespace PiPocket
                 }
             }
             return base.ProcessCmdKey(ref message, key);
-        }
-
-        public void ToggleFullScreen()
-        {
-            if (fullScreen)
-            {
-                WindowState = FormWindowState.Normal;
-                FormBorderStyle = FormBorderStyle.Sizable;
-                WindowState = normalState;
-            }
-            else
-            {
-                normalState = WindowState;
-                WindowState = FormWindowState.Normal;
-                FormBorderStyle = FormBorderStyle.None;
-                WindowState = FormWindowState.Maximized;
-            }
-            fullScreen = !fullScreen;
-            ApplyShellPreferences();
-            shellStrip.Visible = !fullScreen && remoteNotice.Text.Length > 0;
         }
 
         public void Zoom(double delta)
