@@ -1,5 +1,6 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { installerName } from "../../packaging/desktop/feed/desktop-builds.mjs";
@@ -64,7 +65,30 @@ export async function updateFixture(platform, version, bytes) {
 
 // The installer smoke test imports this into its disposable copy of the installed controller.
 // No environment variable or Settings command can select a different feed in the shipping app.
-export function installFixtureTransport(url, trace) {
+export function installFixtureTransport(url, trace, openSettings, desktop) {
+    const callHost = desktop.callHost.bind(desktop);
+
+    desktop.callHost = async (action, data, wait) => {
+        // Check the real link but do not take focus with a browser that cannot download the fixture.
+        if (action === "updates.openDownload") {
+            assert.equal(
+                data.url,
+                "https://github.com/vitalNohj/pi-pocket/actions/runs/456/artifacts/789",
+            );
+
+            return true;
+        }
+
+        return callHost(action, data, wait);
+    };
+
+    const timer = setInterval(() => {
+        if (existsSync(openSettings)) {
+            clearInterval(timer);
+            void desktop.callHost("settings.open", { section: "updates" });
+        }
+    }, 200).unref();
+
     const fetch = globalThis.fetch;
     const prefix = "https://api.github.com/repos/vitalNohj/pi-pocket/actions/";
 

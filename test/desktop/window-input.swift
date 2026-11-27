@@ -316,9 +316,6 @@ case "type-private":
 case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])
-case "settings":
-    prepareInput()
-    key(43, flags: .maskCommand) // Cmd+,
 case "select-file":
     prepareInput()
     key(5, flags: [.maskCommand, .maskShift]) // Go to Folder in the open panel

@@ -42,6 +42,7 @@ const cache = join(install, stateFolderName);
 const proof = join(temp, "desktop-update-proof");
 const origin = "http://127.0.0.1:18787";
 const trace = join(proof, "updates-states.jsonl");
+const openSettings = join(temp, "show-updates-settings");
 const settingsTitle = "Desktop Settings — Pi Pocket";
 const updateLine = "Update ready - restart to apply";
 const entry = join(
@@ -168,13 +169,6 @@ async function screenshot(name, pid) {
     assert((await stat(file)).size > 4000, `${name} contains a window screenshot`);
 }
 
-async function openUpdates(pid) {
-    gui(pid, "settings", "Pi Pocket");
-    gui(pid, "find", settingsTitle);
-    await setTimeout(2000);
-    gui(pid, "click", settingsTitle, 95, 180); // Updates section in the sidebar
-}
-
 async function exerciseUpdates(pid, fixture, downloaded) {
     async function waitForStatus(phase) {
         return waitFor(`Updates status ${phase}`, async () => {
@@ -192,11 +186,6 @@ async function exerciseUpdates(pid, fixture, downloaded) {
         assert.equal(state.latest, latest);
         assert.equal(state.updateLine, phase === "staged" ? updateLine : null);
 
-        if (phase === "downloading" && !win) {
-            // Opening the browser can make the first click raise Settings without hitting a control.
-            gui(pid, "click", settingsTitle, 300, -15); // Title bar
-        }
-
         await setTimeout(350); // Let the real WebView paint the new snapshot before capture.
         await screenshot(name, pid);
 
@@ -208,7 +197,9 @@ async function exerciseUpdates(pid, fixture, downloaded) {
     const download = () => click(390);
     const pending = join(cache, "pending.json");
 
-    await openUpdates(pid);
+    await writeFile(openSettings, "");
+    gui(pid, "find", settingsTitle);
+    await setTimeout(2500); // Let the installed Settings view load the Updates section.
     check();
     await capture("current", "01-up-to-date", current);
     fixture.run.run_number = Number(next.split(".").at(-1));
@@ -219,15 +210,11 @@ async function exerciseUpdates(pid, fixture, downloaded) {
     await capture("downloading", "03-downloading", next);
 
     async function pick(file) {
-        if (!win) {
-            gui(pid, "click", settingsTitle, 300, -15); // Return focus from the browser.
-        }
-
         click(590); // Select installer…
         await waitForStatus("selecting");
 
         if (win) {
-            gui(pid, "type", "Select the downloaded desktop installer", `${file}{ENTER}`);
+            gui(pid, "select-file", "Select the downloaded desktop installer", file);
         } else {
             await setTimeout(1000);
             gui(pid, "select-file", settingsTitle, file);
@@ -364,11 +351,20 @@ try {
         const driver = new URL("./update-fixture.mjs", import.meta.url).href;
         const original = await readFile(entry, "utf8");
 
+        const anchor = "const beginUpdates = await registerDesktopUpdates(";
+
+        assert(original.includes(anchor), "the installed controller registers updates");
+        const argumentList = [fixture.url, trace, openSettings]
+            .map((value) => JSON.stringify(value))
+            .join(", ");
+        const patched = original.replace(
+            anchor,
+            `installFixtureTransport(${argumentList}, desktop);\n${anchor}`,
+        );
+
         await writeFile(
             entry,
-            `import { installFixtureTransport } from ${JSON.stringify(driver)};\n` +
-                `installFixtureTransport(${JSON.stringify(fixture.url)}, ${JSON.stringify(trace)});\n` +
-                original,
+            `import { installFixtureTransport } from ${JSON.stringify(driver)};\n${patched}`,
         );
 
         if (!win) {
@@ -418,8 +414,6 @@ try {
         !(await readFile(entry, "utf8")).includes("installFixtureTransport"),
         "the updated app has no fixture transport",
     );
-    await openUpdates(newPid);
-    await screenshot("07-running-new-build", newPid);
     const summary =
         `Desktop: ${current} (PID ${oldPid}) → ${next} (PID ${newPid}).\n` +
         `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting, desktop settings and data did not change. Server settings stayed the same apart from presence timestamps.\n`;
@@ -427,6 +421,10 @@ try {
     await writeFile(join(proof, "result.txt"), summary);
     console.log(summary);
 } catch (error) {
+    await writeFile(join(proof, "failure.txt"), `${error.stack}\n${error.stderr ?? ""}`).catch(
+        () => {},
+    );
+
     for (const file of [log, join(cache, "last-result.json"), join(cache, "setup.log")]) {
         const contents = await readFile(file, "utf8").catch(() => null);
 
