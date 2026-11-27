@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -15,6 +16,7 @@ namespace PiPocket
         readonly TrayApp host;
         readonly string origin;
         readonly string boundsFile;
+        readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16384, RecursionLimit = 8 };
         readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
         bool committed;
         bool recovered;
