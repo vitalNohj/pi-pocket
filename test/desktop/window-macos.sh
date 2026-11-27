@@ -73,17 +73,27 @@ cleanup() {
         mv -f "$page.saved" "$page"
         rm -f "$existing" "$completed"
     fi
+    if [ -f "$RUNNER_TEMP/window-display-export.plist" ]; then
+        defaults import com.apple.universalaccess "$RUNNER_TEMP/window-display-export.plist"
+    fi
 }
 trap cleanup EXIT
 trap 'exit 124' INT TERM
 
 bounded 60 swiftc "$here/window-macos.swift" -o "$driver"
-cp "$page" "$page.saved"
-printf 'Keep the existing file\n' > "$existing"
-bounded 10 node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
 
 has_windows() { [ "$(drive count)" = "$1" ]; }
 signed_in() { grep -q 'The window is signed in.' "$LOG" 2>/dev/null && has_windows 1; }
+
+# Capture the real page before the download smoke opens Finder.
+chrome=seamless
+printf '%s\n' '{"schemaVersion":1,"windowPreferencesVersion":1,"preferences":{"home":{"mode":"local"},"window":{"titleBar":"seamless"}}}' \
+    > "$PI_POCKET_DESKTOP_STATE/desktop.json"
+. "$here/window-settings-macos.sh"
+
+cp "$page" "$page.saved"
+printf 'Keep the existing file\n' > "$existing"
+bounded 10 node "$here/window-fixture.mjs" "$MANIFEST" "$RUNNER_TEMP/window-files"
 
 for chrome in system seamless; do
     # The existing chrome/download proof covers both styles. The Settings proof changes these with the UI.
@@ -133,5 +143,4 @@ for chrome in system seamless; do
 done
 mv -f "$page.saved" "$page"
 rm -f "$existing" "$completed"
-. "$here/window-settings-macos.sh"
 printf '%s\n' 'System and Seamless; light and dark; a second window; existing name kept; Save dialog cancelled.' > "$out/assertions.txt"

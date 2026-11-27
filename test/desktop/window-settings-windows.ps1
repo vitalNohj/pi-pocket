@@ -27,6 +27,8 @@ try {
     node "$PSScriptRoot/window-evidence.mjs" wallpaper $wallpaper
     if ($LASTEXITCODE -ne 0 -or -not [NativeWindowFixture]::SystemParametersInfo(20, 0, $wallpaper, 3)) { throw 'Could not set runner wallpaper' }
     Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name EnableTransparency -Value 1
+    [NativeWindowFixture]::RefreshDesktopColors()
+    Write-Host "Remote Desktop session: $([System.Windows.Forms.SystemInformation]::TerminalServerSession)"
     # Keep the runner console and Explorer behind the wallpaper captures.
     (New-Object -ComObject Shell.Application).MinimizeAll()
     foreach ($mode in @('light', 'dark')) {
@@ -107,10 +109,11 @@ try {
     if ([NativeWindowFixture]::Windows($app.Id).Length -ne 0) { throw 'Start hidden showed a window at login' }
     [System.Windows.Forms.SendKeys]::SendWait('^+p')
     Wait-For 'open the signed-in session with the saved global shortcut after login' { Signed-In $app }
-    [void][NativeWindowFixture]::Close((Session-Window $app))
+    $main = Session-Window $app
+    if (-not [NativeWindowFixture]::Close($main)) { throw 'Could not request a title-bar close' }
     Wait-For 'hide the session instead of closing the app' { -not $app.HasExited -and -not (Session-Window $app) }
     [System.Windows.Forms.SendKeys]::SendWait('^+p')
-    Wait-For 'restore the closed session with the global shortcut' { Session-Window $app }
+    Wait-For 'restore the same session window with the global shortcut' { (Session-Window $app) -eq $main }
     $handle = Open-Settings $app (Session-Window $app)
     [NativeWindowFixture]::Click($handle, 75, 290)
     [NativeWindowFixture]::Click($handle, 266, 235)
@@ -124,7 +127,7 @@ try {
     if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP 'before-visible-login.log') }
     $app = Start-Process -FilePath $appExe -ArgumentList '--login' -PassThru
     Wait-For 'show the signed-in session at login with Start hidden off' { Signed-In $app }
-    [void][NativeWindowFixture]::Close((Session-Window $app))
+    if (-not [NativeWindowFixture]::Close((Session-Window $app))) { throw 'Could not request a title-bar close' }
     Wait-For 'quit on close with Close to tray off' { $app.Refresh(); $app.HasExited }
     'Changes made through installed Settings survived Quit. Windows Startup, both title bars, the global shortcut, and Acrylic/Mica applied in the installed app.' |
         Set-Content (Join-Path $out 'settings-assertions.txt')

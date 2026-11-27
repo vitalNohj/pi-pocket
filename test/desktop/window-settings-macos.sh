@@ -28,11 +28,15 @@ quit_fixture_app() {
     pid=""
 }
 
+# Some runner images turn on Reduce Transparency. Turn it off in the disposable user
+# account so the screenshot tests the material instead of the accessibility fallback.
+defaults export com.apple.universalaccess "$RUNNER_TEMP/window-display-export.plist" 2>/dev/null || true
+defaults write com.apple.universalaccess reduceTransparency -bool false
+defaults write com.apple.universalaccess increaseContrast -bool false
+bounded 10 "$driver" 0 display-effects
 bounded 10 node "$here/window-evidence.mjs" wallpaper "$bmp"
 sips -s format png "$bmp" --out "$wallpaper" >/dev/null
 bounded 10 "$driver" 0 wallpaper "$wallpaper"
-# The download test reveals its file in Finder. Get it out of the wallpaper captures.
-bounded 10 "$driver" 0 hide-finder
 # Leave margins around the session window so the wallpaper is visible in the same capture.
 defaults write io.github.tannermidd.pi-pocket.launcher 'NSWindow Frame Pi Pocket' '68 52 840 600 0 0 1024 768 '
 
@@ -106,11 +110,13 @@ sleep 2 # The native controller also checks the new listener before it opens a s
 wait_for 'stay hidden at login' 1 has_windows 0
 drive hotkey 35 command shift
 wait_for 'open the signed-in session with the saved global shortcut after login' 30 signed_in
+main_id="$(drive window-ids)"
 drive click 16 16 # The native red close button, not a key equivalent.
 wait_for 'hide the session instead of closing the app' 10 has_windows 0
 ! stopped
 drive hotkey 35 command shift
 wait_for 'restore the closed window with the global shortcut' 10 has_windows 1
+[ "$(drive window-ids)" = "$main_id" ]
 settings_open
 settings_click 75 290
 settings_click 266 235

@@ -22,11 +22,17 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr w);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr w, int command);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr w, uint message, IntPtr wParam, IntPtr lParam);
-    public static bool Close(IntPtr w) { return PostMessage(w, 0x0010, IntPtr.Zero, IntPtr.Zero); }
+    // A raw WM_CLOSE can be classified as TaskManagerClosing, not a user title-bar close.
+    public static bool Close(IntPtr w) { return PostMessage(w, 0x0112, new IntPtr(0xf060), IntPtr.Zero); }
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out Rect bounds, int size);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out int value, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr w, StringBuilder text, int size);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SystemParametersInfo(uint action, uint param, string value, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr w, uint message, IntPtr wp, string lp, uint flags, uint timeout, out IntPtr result);
+    public static void RefreshDesktopColors() {
+        IntPtr result;
+        SendMessageTimeout(new IntPtr(0xffff), 0x001a, IntPtr.Zero, "ImmersiveColorSet", 2, 100, out result);
+    }
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     public static IntPtr[] Windows(int process) {

@@ -4,8 +4,10 @@ import Cocoa
 
 let args = CommandLine.arguments
 let pid = pid_t(args[1])!
-if args[2] == "hide-finder" {
-    NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.hide()
+if args[2] == "display-effects" {
+    let workspace = NSWorkspace.shared
+    print("Reduce Transparency: \(workspace.accessibilityDisplayShouldReduceTransparency)")
+    print("Increase Contrast: \(workspace.accessibilityDisplayShouldIncreaseContrast)")
     exit(0)
 }
 if args[2] == "wallpaper" {
