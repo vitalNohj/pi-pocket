@@ -12,6 +12,15 @@ saved() { [ "$(plutil -extract "preferences.$1.$2" raw "$PI_POCKET_DESKTOP_STATE
 settings_click() { drive click "$1" "$(( $2 + 28 ))"; }
 settings_select() { settings_click 450 "$1"; drive key "$2"; drive key 36; }
 settings_open() { drive key 43 command; wait_for 'open Desktop Settings' 15 has_windows 2; sleep 2; }
+local_ready() {
+    local address
+    address="$(plutil -extract url raw "$PI_POCKET_DIR/launcher-running.json" 2>/dev/null)" || return 1
+    case "$address" in
+        http://127.0.0.1:[0-9]*|http://\[::1\]:[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    curl -fsS --max-time 2 "${address%/}/api/pocket/info" | grep -q '"name":"pi-pocket"'
+}
 quit_fixture_app() {
     bounded 5 "$app" --quit
     wait_for 'quit' 30 stopped
@@ -89,15 +98,16 @@ for mode in light dark; do
     quit_fixture_app
 done
 
+if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/before-hidden-login.log"; fi
 "$app" --login &
 pid=$!
-wait_for 'start the local server at login' 60 test -f "$PI_POCKET_DIR/launcher-running.json"
-sleep 2
-has_windows 0
+wait_for 'start the local server at login' 60 local_ready
+sleep 2 # The native controller also checks the new listener before it opens a session.
+wait_for 'stay hidden at login' 1 has_windows 0
 drive hotkey 35 command shift
-wait_for 'restore the saved global shortcut after login' 20 has_windows 1
-drive key 13 command
-wait_for 'hide instead of closing the app' 10 has_windows 0
+wait_for 'open the signed-in session with the saved global shortcut after login' 30 signed_in
+drive click 16 16 # The native red close button, not a key equivalent.
+wait_for 'hide the session instead of closing the app' 10 has_windows 0
 ! stopped
 drive hotkey 35 command shift
 wait_for 'restore the closed window with the global shortcut' 10 has_windows 1
@@ -110,10 +120,11 @@ wait_for 'save Start hidden off' 10 saved window startHidden false
 settings_click 266 202
 wait_for 'save Close to tray off' 10 saved window closeToTray false
 quit_fixture_app
+if [ -f "$LOG" ]; then mv "$LOG" "$RUNNER_TEMP/before-visible-login.log"; fi
 "$app" --login &
 pid=$!
-wait_for 'show the window at login with Start hidden off' 60 has_windows 1
-drive key 13 command
+wait_for 'show the signed-in session at login with Start hidden off' 60 signed_in
+drive click 16 16
 wait_for 'quit on close with Close to tray off' 30 stopped
 wait "$pid"
 pid=""

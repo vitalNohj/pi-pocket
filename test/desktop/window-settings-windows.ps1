@@ -2,6 +2,24 @@
 $index = Join-Path (Split-Path $env:MANIFEST) 'web\index.html'
 $wallpaper = Join-Path $env:RUNNER_TEMP 'window-backdrop.bmp'
 $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Pi Pocket.lnk'
+$running = Join-Path $env:PI_POCKET_DIR 'launcher-running.json'
+
+function Session-Window($app) {
+    [NativeWindowFixture]::Windows($app.Id) | Where-Object { [NativeWindowFixture]::Title($_) -eq 'Pi Pocket' } | Select-Object -First 1
+}
+
+function Signed-In($app) {
+    (Session-Window $app) -and (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log)
+}
+
+function Local-Ready {
+    try {
+        if (-not (Test-Path $running)) { return $false }
+        $origin = [Uri]((Get-Content -Raw $running | ConvertFrom-Json).url)
+        return $origin.IsLoopback -and (Invoke-RestMethod -Uri ([Uri]::new($origin, '/api/pocket/info')) -TimeoutSec 2).name -eq 'pi-pocket'
+    } catch { return $false }
+}
+
 Copy-Item $index "$index.evidence-original"
 $hadStartup = Test-Path $startup
 if ($hadStartup) { Copy-Item $startup "$env:RUNNER_TEMP/window-startup-original.lnk" }
@@ -16,8 +34,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Could not select the screenshot theme' }
         if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP "settings-before-$mode.log") }
         $app = Start-Process -FilePath $appExe -PassThru
-        Wait-For 'open the real Pi Pocket page' { (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log) -and [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
-        $main = [NativeWindowFixture]::Windows($app.Id)[0]
+        Wait-For 'open the real Pi Pocket page' { Signed-In $app }
+        $main = Session-Window $app
         $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $width = [Math]::Min($work.Width - 100, 1120)
         $height = [Math]::Min($work.Height - 95, 760)
@@ -72,24 +90,28 @@ try {
             Wait-For 'show Pi Pocket with the global shortcut' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
         }
         if ([NativeWindowFixture]::Backdrop($main) -ne 3 -or [NativeWindowFixture]::FrameTop($main) -ge 20) { throw 'The restored window does not use Seamless and Acrylic' }
-        [void][NativeWindowFixture]::SetForegroundWindow($main)
+        if ([NativeWindowFixture]::GetForegroundWindow() -ne $main) {
+            [NativeWindowFixture]::Click($main, 166, 158) # Focus the session, not the desktop behind it.
+            Wait-For 'focus the window for the Acrylic capture' { [NativeWindowFixture]::GetForegroundWindow() -eq $main }
+        }
         Start-Sleep -Seconds 2
         Screenshot "seamless-see-through-$mode"
         Request-Quit
         Wait-For 'quit the screenshot app' { $app.Refresh(); $app.HasExited }
     }
 
+    if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP 'before-hidden-login.log') }
     $app = Start-Process -FilePath $appExe -ArgumentList '--login' -PassThru
-    Wait-For 'start the local server at login' { Test-Path (Join-Path $env:PI_POCKET_DIR 'launcher-running.json') }
-    Start-Sleep -Seconds 2
+    Wait-For 'start the local server at login' { Local-Ready }
+    Start-Sleep -Seconds 2 # The native controller also checks the new listener before it opens a session.
     if ([NativeWindowFixture]::Windows($app.Id).Length -ne 0) { throw 'Start hidden showed a window at login' }
     [System.Windows.Forms.SendKeys]::SendWait('^+p')
-    Wait-For 'restore the saved global shortcut after login' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
-    [void][NativeWindowFixture]::Close([NativeWindowFixture]::Windows($app.Id)[0])
-    Wait-For 'hide instead of closing the app' { -not $app.HasExited -and [NativeWindowFixture]::Windows($app.Id).Length -eq 0 }
+    Wait-For 'open the signed-in session with the saved global shortcut after login' { Signed-In $app }
+    [void][NativeWindowFixture]::Close((Session-Window $app))
+    Wait-For 'hide the session instead of closing the app' { -not $app.HasExited -and -not (Session-Window $app) }
     [System.Windows.Forms.SendKeys]::SendWait('^+p')
-    Wait-For 'restore the closed window with the global shortcut' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
-    $handle = Open-Settings $app ([NativeWindowFixture]::Windows($app.Id)[0])
+    Wait-For 'restore the closed session with the global shortcut' { Session-Window $app }
+    $handle = Open-Settings $app (Session-Window $app)
     [NativeWindowFixture]::Click($handle, 75, 290)
     [NativeWindowFixture]::Click($handle, 266, 235)
     Wait-For 'remove Launch at login' { -not (Test-Path $startup) }
@@ -99,9 +121,10 @@ try {
     Wait-For 'save Close to tray off' { Saved 'window' 'closeToTray' $false }
     Request-Quit
     Wait-For 'quit after changing login preferences' { $app.Refresh(); $app.HasExited }
+    if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP 'before-visible-login.log') }
     $app = Start-Process -FilePath $appExe -ArgumentList '--login' -PassThru
-    Wait-For 'show the window at login with Start hidden off' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
-    [void][NativeWindowFixture]::Close([NativeWindowFixture]::Windows($app.Id)[0])
+    Wait-For 'show the signed-in session at login with Start hidden off' { Signed-In $app }
+    [void][NativeWindowFixture]::Close((Session-Window $app))
     Wait-For 'quit on close with Close to tray off' { $app.Refresh(); $app.HasExited }
     'Changes made through installed Settings survived Quit. Windows Startup, both title bars, the global shortcut, and Acrylic/Mica applied in the installed app.' |
         Set-Content (Join-Path $out 'settings-assertions.txt')

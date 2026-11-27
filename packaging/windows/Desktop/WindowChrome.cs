@@ -156,14 +156,15 @@ namespace PiPocket
             bool allowsTransparency = AllowsTransparency();
             int backdrop = pageChrome && host.WindowPrefs.seeThrough && !fullScreen && allowsTransparency
                 ? (host.WindowPrefs.material == "mica" ? 2 : 3) : 1; // DWMSBT_MAINWINDOW / TRANSIENTWINDOW
-            var margins = backdrop == 1 ? new Margins { Top = FrameExtension } : new Margins { Top = -1 };
+            // DwmExtendFrameIntoClientArea uses a negative left margin for the full glass sheet.
+            var frameMargins = new Margins { Top = FrameExtension };
+            var margins = backdrop == 1 ? frameMargins : new Margins { Left = -1 };
             int glass = DwmExtendFrameIntoClientArea(Handle, ref margins);
             int result = DwmSetWindowAttribute(Handle, 38, ref backdrop, 4);
             translucent = backdrop != 1 && glass == 0 && result == 0;
             if (backdrop != 1 && !translucent)
             {
-                margins.Top = FrameExtension;
-                DwmExtendFrameIntoClientArea(Handle, ref margins);
+                DwmExtendFrameIntoClientArea(Handle, ref frameMargins);
             }
             EffectStatus = !allowsTransparency || backdrop != 1 && !translucent ? "unsupported" :
                 fullScreen ? "full-screen" : pageChrome ? "available" : "page";
