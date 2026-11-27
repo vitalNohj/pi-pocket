@@ -1,14 +1,55 @@
-// Dictation into a message box, with the browser's own speech recognition (the Web Speech API). Words show in the box
-// as they are heard and stay once the browser settles on them; nothing is ever sent by itself. Chrome sends the audio
-// to Google's servers to be recognised; Safari on iOS has it too; Firefox has none, and there the mic does not show.
+// Dictation into a message box. Results use the ordinary draft path, never Send. Without an offline provider or
+// preference, use Web Speech where supplied (which may send the audio to the browser vendor).
 import { useEffect, useRef, useState } from "preact/hooks";
-import { notify } from "./store.js";
+import { notify, store } from "./store.js";
 import { html, Icon } from "./ui.js";
 
-/** The browser's recognizer, looked up when used (so a page can stand one in), or undefined where there is none. */
-const Recognizer = () => globalThis.SpeechRecognition ?? globalThis.webkitSpeechRecognition;
+let offlineProvider = null;
+const providerChanges = new Set();
 
-/** Whether the mic can work here: a recognizer, and a page browsers give the microphone to (https, or this machine). */
+/** This person's device choice survives an extension reload or disable. Never silently fall back to Web Speech. */
+export function offlineVoiceKey() {
+    const id = store.state.me?.id;
+
+    return id === undefined ? null : `x.dictation.offline.${encodeURIComponent(id)}`;
+}
+
+function Recognizer() {
+    const key = offlineVoiceKey();
+
+    if (offlineProvider && offlineProvider.key === key) {
+        return offlineProvider.Recognition;
+    }
+
+    try {
+        if (key && localStorage.getItem(key) === "on") {
+            return undefined;
+        }
+    } catch {
+        // Storage is not available in this profile.
+    }
+
+    return globalThis.SpeechRecognition ?? globalThis.webkitSpeechRecognition;
+}
+
+/** A first-party extension supplies a Web Speech-shaped local recognizer. Removal cancels its outstanding results. */
+export function registerDictationProvider(Recognition) {
+    const entry = { Recognition, key: offlineVoiceKey() };
+
+    current?.stop(true);
+    offlineProvider = entry;
+    providerChanges.forEach((changed) => changed());
+
+    return () => {
+        if (offlineProvider === entry) {
+            current?.stop(true);
+            offlineProvider = null;
+            providerChanges.forEach((changed) => changed());
+        }
+    };
+}
+
+/** HTTPS and trusted loopback are the only contexts browsers give a microphone. */
 export const voiceAvailable = () =>
     globalThis.isSecureContext !== false && typeof Recognizer() === "function";
 
@@ -33,15 +74,10 @@ const boxes = [];
 /** Alt+V: start or stop dictation in PiP's box or the newest; false when no box can. */
 export function toggleDictation() {
     const shown = (each) => each.box.current?.isConnected === true;
-    const box = boxes.findLast((each) => each.top && shown(each)) ?? boxes.findLast(shown);
+    const top = boxes.findLast((each) => each.top && shown(each));
+    const box = top ?? (store.state.pipOpen ? undefined : boxes.findLast(shown));
 
-    if (!box || !voiceAvailable()) {
-        return false;
-    }
-
-    box.toggle();
-
-    return true;
+    return voiceAvailable() && (box?.toggle() ?? false);
 }
 
 /**
@@ -94,6 +130,7 @@ function join(before, words, after) {
  */
 export function useDictation(box, onText, { top = false, place = null } = {}) {
     const [listening, setListening] = useState(false);
+    const [finishing, setFinishing] = useState(false);
     const hear = useRef(onText);
     const where = useRef(place);
     const self = useRef(null);
@@ -106,41 +143,65 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
             box,
             top,
             recognition: null,
-            /** Stop listening: `drop` throws away what is not settled yet, and anything heard after. */
-            stop(drop = false) {
-                const recognition = this.recognition;
-
-                if (!recognition) {
-                    return;
-                }
-
+            finishing: false,
+            guard: null,
+            clear() {
+                this.guard?.disconnect();
+                this.guard = null;
                 this.recognition = null;
+                this.finishing = false;
                 setListening(false);
+                setFinishing(false);
 
                 if (current === this) {
                     current = null;
                 }
+            },
+            /** Stop capture, optionally discarding any late results. A normal stop can still deliver a final result. */
+            stop(drop = false) {
+                const recognition = this.recognition;
+
+                if (!recognition) {
+                    return false;
+                }
 
                 if (drop) {
-                    recognition.onresult = null;
+                    this.clear();
+                    recognition.onresult = recognition.onerror = recognition.onend = null;
                     recognition.abort();
-                } else {
+                } else if (!this.finishing) {
+                    this.finishing = true;
+                    setListening(false);
+                    setFinishing(true);
                     recognition.stop();
                 }
+
+                return true;
             },
             start() {
                 const element = box.current;
                 const Recognition = Recognizer();
 
-                // A read-only box's words are not to change (a send on its way holds them).
-                if (!element || element.readOnly || typeof Recognition !== "function") {
-                    return;
+                const { me, conversationId, pipOpen } = store.state;
+                const canHear = () =>
+                    box.current === element &&
+                    element?.isConnected &&
+                    !element.readOnly &&
+                    !element.disabled &&
+                    !document.hidden &&
+                    store.state.me?.id === me?.id &&
+                    store.state.conversationId === conversationId &&
+                    store.state.pipOpen === pipOpen;
+
+                if (!canHear() || typeof Recognition !== "function" || !voiceAvailable()) {
+                    return false;
                 }
 
-                current?.stop();
-                current = this;
+                current?.stop(true);
 
                 const recognition = new Recognition();
+
+                current = this;
 
                 recognition.lang = navigator.language || "en-US";
                 recognition.continuous = true;
@@ -212,6 +273,16 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
                 };
 
                 recognition.onresult = (event) => {
+                    if (this.recognition !== recognition) {
+                        return;
+                    }
+
+                    if (!canHear()) {
+                        this.stop(true);
+
+                        return;
+                    }
+
                     const results = event.results;
 
                     if (
@@ -283,31 +354,48 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
                     if (event.error !== "aborted") {
                         const level = event.error === "no-speech" ? "info" : "error";
 
-                        notify(level, ERRORS[event.error] ?? `Dictation stopped: ${event.error}.`);
+                        notify(
+                            level,
+                            ERRORS[event.error] ??
+                                event.message ??
+                                `Dictation stopped: ${event.error}.`,
+                        );
                     }
                 };
 
                 recognition.onend = () => {
                     if (this.recognition === recognition) {
-                        this.stop();
+                        this.clear();
                     }
                 };
 
                 try {
-                    recognition.start();
+                    if (typeof MutationObserver === "function") {
+                        this.guard = new MutationObserver(() => {
+                            if (!canHear()) {
+                                this.stop(true);
+                            }
+                        });
+                        this.guard.observe(element, {
+                            attributes: true,
+                            attributeFilter: ["readonly", "disabled"],
+                        });
+                    }
+
                     setListening(true);
+                    recognition.start();
+
+                    return true;
                 } catch (error) {
-                    this.recognition = null;
-                    current = null;
+                    this.stop(true);
                     notify("error", `Dictation did not start: ${error.message ?? error}`);
+
+                    return false;
                 }
             },
             toggle() {
-                if (this.recognition) {
-                    this.stop();
-                } else {
-                    this.start();
-                }
+                // The microphone has stopped, but the last phrase can still be decoding.
+                return this.finishing || (this.recognition ? this.stop() : this.start());
             },
         };
     }
@@ -316,20 +404,47 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
 
     // The newest box takes the shortcut while it shows; leaving it ends dictation, as does the tab going out of sight.
     useEffect(() => {
-        const hidden = () => document.hidden && dictation.stop();
+        const cancel = () => dictation.stop(true);
+        const hidden = () => document.hidden && cancel();
+
+        const escape = (event) => {
+            if (event.key === "Escape" && !event.isComposing && dictation.recognition) {
+                event.preventDefault();
+                event.stopPropagation();
+                cancel();
+            }
+        };
+
+        let { me, conversationId, pipOpen } = store.state;
+        const unsubscribe = store.subscribe((state) => {
+            if (
+                state.me?.id !== me?.id ||
+                state.conversationId !== conversationId ||
+                state.pipOpen !== pipOpen
+            ) {
+                ({ me, conversationId, pipOpen } = state);
+                cancel();
+            }
+        });
 
         boxes.push(dictation);
         document.addEventListener("visibilitychange", hidden);
+        document.defaultView?.addEventListener("pagehide", cancel);
+        document.addEventListener("keydown", escape, true);
 
         return () => {
             boxes.splice(boxes.indexOf(dictation), 1);
+            unsubscribe();
             document.removeEventListener("visibilitychange", hidden);
-            dictation.stop(true);
+            document.defaultView?.removeEventListener("pagehide", cancel);
+            document.removeEventListener("keydown", escape, true);
+            cancel();
         };
     }, []);
 
     return {
         listening,
+        finishing,
         toggle: () => dictation.toggle(),
         stop: (drop) => dictation.stop(drop),
     };
@@ -337,11 +452,22 @@ export function useDictation(box, onText, { top = false, place = null } = {}) {
 
 /** The mic: starts dictation, and while it listens, stops it. None where the browser cannot recognise speech. */
 export function MicButton({ dictation, class: className = "", size = 17, part, disabled = false }) {
+    const [, redraw] = useState(0);
+
+    useEffect(() => {
+        const changed = () => redraw((v) => v + 1);
+
+        providerChanges.add(changed);
+        changed();
+
+        return () => providerChanges.delete(changed);
+    }, []);
+
     if (!voiceAvailable()) {
         return null;
     }
 
-    const { listening, toggle } = dictation;
+    const { listening, finishing, toggle } = dictation;
 
     return html`<button
         type="button"
@@ -349,8 +475,9 @@ export function MicButton({ dictation, class: className = "", size = 17, part, d
         data-part=${part}
         aria-label="Dictate"
         aria-pressed=${listening ? "true" : "false"}
-        title=${listening ? "Listening: tap to stop (Alt+V)" : "Dictate (Alt+V)"}
-        disabled=${disabled}
+        aria-busy=${finishing ? "true" : "false"}
+        title=${finishing ? "Finishing dictation…" : listening ? "Listening: tap to stop (Alt+V)" : "Dictate (Alt+V)"}
+        disabled=${disabled || finishing}
         onMouseDown=${(event) => event.preventDefault()}
         onClick=${toggle}
     >

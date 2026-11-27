@@ -1,0 +1,87 @@
+.dictation-settings,
+.dictation-catalog,
+.dictation-model-info,
+.dictation-transfer {
+    display: grid;
+    min-width: 0;
+}
+
+.dictation-settings {
+    gap: 14px;
+}
+
+.dictation-catalog {
+    gap: 6px;
+}
+
+.dictation-catalog-head,
+.dictation-model-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+}
+
+.dictation-catalog-head {
+    justify-content: space-between;
+}
+
+.dictation-catalog-head h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.dictation-models {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dictation-model-info {
+    gap: 3px;
+    overflow-wrap: anywhere;
+}
+
+.dictation-model-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-inline-start: auto;
+}
+
+.dictation-selected {
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    background: var(--accent-soft);
+    color: var(--text);
+    font-size: 12px;
+}
+
+.dictation-transfer {
+    gap: 3px;
+    width: 9rem;
+}
+
+.dictation-transfer progress {
+    width: 100%;
+    height: 8px;
+    accent-color: var(--accent-fill);
+}
+
+@media (max-width: 600px) {
+    .dictation-model {
+        flex-wrap: wrap;
+    }
+
+    .dictation-model-info {
+        flex-basis: 100%;
+    }
+
+    .dictation-model-actions .button {
+        min-height: 36px;
+    }
+}

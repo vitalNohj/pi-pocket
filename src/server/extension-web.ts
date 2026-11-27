@@ -178,22 +178,22 @@ function byRole(user: WebUser, access: WebAccess): boolean {
     return access === "view" || (access === "steer" && user.role === "guest");
 }
 
-/** The only browser module a session-invited user may load. */
-function isTrustedDiagramsClient(part: WebPart): boolean {
-    const client = part.client;
+/** Only these first-party static clients work without broader extension permissions. */
+function isTrustedStaticClient(part: WebPart): boolean {
+    const { client, builtInModule: name } = part;
 
     return (
+        (name === "diagrams" || name === "dictation") &&
         client !== undefined &&
-        part.builtInModule === "diagrams" &&
-        client.name === "diagrams" &&
+        client.name === name &&
         client.folder &&
         client.access === "view"
     );
 }
 
 /**
- * Whether someone may load a part's browser module. The trusted built-in diagrams client draws the diagrams of every
- * transcript, so whoever sees a session loads it: a person invited to one session, or one chosen only for a runner.
+ * Whether someone may load a part's browser module. The built-in Diagrams and Dictation clients work entirely in the
+ * page. A person limited to one session or runner does not gain access to any extension routes by loading one.
  */
 function mayUseClient(
     part: WebPart,
@@ -204,7 +204,7 @@ function mayUseClient(
 
     return (
         client !== undefined &&
-        (mayUse(user, client.access, part.builtInModule) || isTrustedDiagramsClient(part))
+        (mayUse(user, client.access, part.builtInModule) || isTrustedStaticClient(part))
     );
 }
 
@@ -1001,6 +1001,13 @@ export class ExtensionWebs {
             : { route: best.route, part, params: best.params };
     }
 
+    /** The fixed public speech assets belong only to the enabled, first-party Dictation browser module. */
+    dictationEnabled(): boolean {
+        const part = this.#parts.get("dictation");
+
+        return part?.builtInModule === "dictation" && isTrustedStaticClient(part);
+    }
+
     /** The browser modules someone's tabs load: each module's name, title, and address. */
     clients(user: WebUser): { module: string; title: string; url: string }[] {
         return [...this.#parts.values()]
@@ -1175,7 +1182,7 @@ export class ExtensionWebs {
 
     /** Tell the tabs of the people who load either part's browser module. */
     #changed(...parts: (WebPart | undefined)[]): void {
-        if (parts.some((part) => part !== undefined && isTrustedDiagramsClient(part))) {
+        if (parts.some((part) => part !== undefined && isTrustedStaticClient(part))) {
             // The access filter cannot select session-invited users, so refresh every tab list.
             this.#options.changed?.("all");
 

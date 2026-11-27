@@ -168,6 +168,11 @@ jobs:
                   if-no-files-found: ignore
                   retention-days: 7
 
+            - name: Transcribe the local fixture with the installed speech worker
+              timeout-minutes: 5
+              run: |
+                  "$APP/node/bin/node" --experimental-vm-modules test/desktop/dictation-smoke.mjs "$MANIFEST" "$RUNNER_TEMP/dictation-models"
+
             - name: Start Pi Pocket and check that it answers HTTP
               run: |
                   out="$RUNNER_TEMP/pi-pocket.log"
