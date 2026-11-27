@@ -1,4 +1,5 @@
 // This driver runs on the interactive Windows installer runner. It is not shipped with the app.
+using Accessibility;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,6 +23,8 @@ static class WindowInput
     delegate bool Visitor(IntPtr window, IntPtr ignored);
 
     [DllImport("shell32.dll")] static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier icon, out Rect rect);
+    [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr window, uint objectId, ref Guid iid,
+        [MarshalAs(UnmanagedType.Interface)] out IAccessible accessible);
     [DllImport("user32.dll")] static extern bool EnumWindows(Visitor visit, IntPtr ignored);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out int pid);
@@ -197,36 +200,69 @@ static class WindowInput
         return opened;
     }
 
+    static Action MenuItem(IntPtr window, string label)
+    {
+        var row = Named(AutomationElement.FromHandle(window), label);
+        if (row != null && !row.Current.IsOffscreen) { return () => ClickElement(row, false); }
+
+        // .NET Framework ToolStrip can expose its children through MSAA instead of UI Automation.
+        Guid iid = typeof(IAccessible).GUID;
+        IAccessible popup;
+        if (AccessibleObjectFromWindow(window, unchecked((uint)-4), ref iid, out popup) < 0 || popup == null) { return null; }
+        int count = popup.accChildCount;
+        for (int id = 1; id <= count; id++)
+        {
+            try
+            {
+                int childId = id;
+                if (popup.get_accName(childId) == label) { return () => popup.accDoDefaultAction(childId); }
+                var child = popup.get_accChild(childId) as IAccessible;
+                if (child != null && child.get_accName(0) == label) { return () => child.accDoDefaultAction(0); }
+            }
+            catch (COMException) { } // Separators and other unnamed children can reject name queries.
+        }
+        return null;
+    }
+
     static void RunnerTray(int pid, string label, string path)
     {
         var icon = VisibleIcon();
-        if (icon == null)
+        if (icon != null) { ClickElement(icon, true); }
+        else if (!OpenRegisteredTrayMenu(pid))
         {
             FocusNotificationArea();
-            icon = VisibleIcon();
+            ClickElement(WaitForNamed(VisibleIcon, "Pi Pocket tray icon"), true);
         }
-        if (icon != null) { ClickElement(icon, true); }
-        else if (!OpenRegisteredTrayMenu(pid)) { throw new InvalidOperationException("The installed app has no accessible or registered tray icon."); }
 
-        IntPtr menu = IntPtr.Zero;
-        var row = WaitForNamed(() =>
+        Stopwatch wait = Stopwatch.StartNew();
+        while (wait.Elapsed.TotalSeconds < 15)
         {
-            AutomationElement result = null;
+            Action select = null;
+            IntPtr menu = IntPtr.Zero;
             EnumWindows(delegate(IntPtr window, IntPtr ignored)
             {
                 int owner;
+                Rect rect;
                 GetWindowThreadProcessId(window, out owner);
-                if (owner != pid || !IsWindowVisible(window)) { return true; }
-                result = Named(AutomationElement.FromHandle(window), label);
-                if (result == null || result.Current.IsOffscreen) { return true; }
+                if (owner != pid || !IsWindowVisible(window) || !GetWindowRect(window, out rect) ||
+                    rect.Right - rect.Left > 450 || rect.Bottom - rect.Top > 450) { return true; }
+                try { select = MenuItem(window, label); }
+                catch (ElementNotAvailableException) { }
+                catch (COMException) { }
+                if (select == null) { return true; }
                 menu = window;
                 return false;
             }, IntPtr.Zero);
-            return menu == IntPtr.Zero ? null : result;
-        }, label);
-        Screenshot(menu, path);
-        // Activate the exact native row that appears in the screenshot.
-        ClickElement(row, false);
+            if (select != null)
+            {
+                Screenshot(menu, path);
+                // Activate the exact native row that appears in the screenshot.
+                select();
+                return;
+            }
+            Thread.Sleep(200);
+        }
+        throw new InvalidOperationException("Could not see '" + label + "' in the installed app's tray menu.");
     }
 
     static void WaitForFocusedField(IntPtr window, string expected)

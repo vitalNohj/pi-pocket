@@ -214,19 +214,6 @@ try {
     await shot("runner-working", settings);
     console.log("The installed Runner card showed Working now.");
 
-    await press("Home");
-    let menuError;
-
-    try {
-        await shot("runner-menu");
-        await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
-        console.log("The native menu showed Working now and its Runner row opened the card.");
-    } catch (error) {
-        // Still check the server's list if the OS menu driver failed.
-        menuError = error;
-        console.error(error.message);
-    }
-
     const signed = await fetch(`${address}/api/sign-in-link`, {
         method: "POST",
         headers: { Authorization: `Bearer ${app.config.addDevice(owner.id)}`, "X-Pocket": "1" },
@@ -247,9 +234,9 @@ try {
     await shot("server-connected", serverWindow);
     console.log("The server listed the same computer in Access → By computer while it was online.");
 
-    if (menuError) {
-        throw menuError;
-    }
+    await shot("runner-menu");
+    await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
+    console.log("The native menu showed Working now and its Runner row opened the card.");
 
     await quit();
     await until("the app quit", exited);

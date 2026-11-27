@@ -136,7 +136,7 @@ jobs:
                       '/r:' + (Join-Path $wpf $_)
                   }
                   & $csc /nologo /target:exe /platform:x64 /warnaserror+ /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-                      @automation "/out:$driver" $source
+                      /r:Accessibility.dll @automation "/out:$driver" $source
                   if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows input driver' }
                   node test/desktop/native-smoke.mjs (Join-Path $env:APP 'Pi Pocket.exe') `
                       $driver (Join-Path $env:RUNNER_TEMP 'windows-home') (Join-Path $env:RUNNER_TEMP "dictation-models")
