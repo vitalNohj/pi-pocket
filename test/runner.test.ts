@@ -504,10 +504,6 @@ describe("runner link", () => {
     });
 
     it("a folder lists every entry it can read, without the ones whose lstat fails", async (t) => {
-        if (process.platform === "win32") {
-            return t.skip("Windows file names use UTF-16, not raw bytes");
-        }
-
         const folder = mkdtempSync(join(root, "home-"));
 
         mkdirSync(join(folder, "alpha"));
