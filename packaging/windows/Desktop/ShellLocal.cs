@@ -119,7 +119,7 @@ namespace PiPocket
                     if (answer != DialogResult.OK) { return; }
                 }
                 await Task.Run(delegate { VerifiedOwnerRequest(address, pid, "/api/restart"); });
-                ShowBalloon("Pi Pocket", "The server restarts. Running work continues.", ToolTipIcon.Info, null);
+                LocalNotice("The server restarts. Running work continues.");
             }
             catch (Exception) { throw new InvalidOperationException("Could not restart the verified local server."); }
             finally { restartingServer = false; }

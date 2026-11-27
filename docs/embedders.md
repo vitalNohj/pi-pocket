@@ -24,7 +24,7 @@ The embedder (in Electron, its preload script) puts one object in the top page o
 window.pocketHost = {
     kind: "my-app", // which embedder; for logs only
     apiVersion: 1,
-    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession"],
+    capabilities: ["menu", "badge", "notify", "visibility", "pinned", "open", "newSession", "sessionFeed"],
 
     menuTitle(), // the heading of the embedder's group in the menu, such as its name; optional
     menuItems(), // [{ id, label, hint? }]: the items of that group, at the menu's end
@@ -33,6 +33,8 @@ window.pocketHost = {
     notify(message), // a notification for the embedder to show (below)
     visible(), // whether the embedder's window shows: false while hidden in a tray or minimized
     setPinned(list), // [{ id, title, state, label, url }]: the pinned sessions, in order
+    primary(), // whether this document owns the native session and notification feed (`sessionFeed`)
+    setAccount(active), // true after the page checks its signed-in account, false on a reset (`sessionFeed`)
     subscribe(listener, events), // the embedder's events (below), and the ones this page handles
 };
 ```
@@ -50,6 +52,14 @@ window.pocketHost = {
 | `pinned`     | Calls `setPinned(list)` when a pinned session's title or state changes, for a tray menu. `state` is the square's shape from `sessionMark`: `waiting`, `limited`, `working`, `failed`, `fresh` (finished, not read), or `seen`. The session list's theme states `done` and `idle` do not change these app bridge names. `label` says it in words. |
 | `open`       | Opens what the embedder asks for (an `open` event), also without `notify`.                                                                                                                                                                                                                                                                       |
 | `newSession` | Opens the **New session** sheet when the embedder asks for it (a `newSession` event), as Alt+N does.                                                                                                                                                                                                                                             |
+
+### One feed for multiple windows
+
+`sessionFeed` is an optional addition to v1. A host that offers it chooses one subscribed session document per connection to be primary. `primary()` is initially false. The host updates it before sending `{ type: "primary" }`; the page opens or removes its `embedder=notify` stream on this event. Window visibility is separate and still reported for every window. Only the primary may send notices to the OS. A secondary can keep a current pins and badge snapshot in the page, and publish it if promoted. When the primary document goes away, clear its feed before promoting another session document.
+
+`setAccount(true)` marks the page's account as checked by Pi Pocket. On sign-out, account or scope change, `setAccount(false)` revokes it: clear pins, badge, notices and pending actions. Do not persist the feed. Bind actions to an individual document and account epoch. A `sessionFeed` page checks its current account before executing New Session or answering an approval; it also checks session access before opening a native link. Use only `/`, `/?pip=1`, and `/s/<positive integer>` for native destinations. The server still decides what this person can see or do.
+
+A host without `sessionFeed` keeps the v1 behavior. On a legacy page that has no account epoch, the native host can display notifications and open the page, but does not add approval buttons. If the page does not name `newSession`, bring up Pi Pocket and direct the person to the page's **New** button when it is available. Windows Setup and macOS LaunchServices register `pi-pocket://new`; it requests the picker and does not create a session or accept any other link arguments. An existing default protocol handler retains precedence.
 
 A page from before 0.28.0-beta.7, still open after the server updates, asks with `host=notify` and listens for `desktop-notify`: the server still sends it those, until the page reloads.
 
@@ -79,7 +89,9 @@ The server decides as for Web Push (`alerts.ts`): who can see the session, the k
 }
 ```
 
-The embedder chooses how much of an approval to show and whether to offer **Allow**, from `may`, `allow`, and `call`. It always offers **Deny**. The server checks again, when the answer comes, that the person may give it.
+The embedder chooses how much of an approval to show and whether to offer **Allow**, from `may`, `allow`, and `call`. The native hosts mark hidden text and truncation. By default they add **Allow** only for a permitted call that fits on a short, printable line, and **Deny** for an actionable approval. OS callbacks carry an opaque, expiring ticket instead of an approval ID or URL. If its document or account is no longer current, the host only opens Pi Pocket for review. The server checks again, when the answer comes, that the person may give it.
+
+Native hosts use tags to replace notices. They group `done-…` notices with the latest session as the destination, and wait until the person returns if the computer is asleep, locked or idle. Other notices are not held with the finishes. The taskbar or Dock badge and the tray or status item still show the needs-you count when the OS blocks notifications.
 
 ### The embedder's events
 
@@ -112,7 +124,7 @@ On `<html>`, `data-window-controls` is `left` (macOS), `right` (Windows, Linux),
 The app bridge is only as safe as the embedder that offers it. An embedder must:
 
 - put it only in the top frame of the server's origin, and take it away when that frame goes elsewhere;
-- check, in its main process, the frame and origin of every call that comes from the page: the sender frame's own origin (`senderFrame.origin`), not its `url`, because the server's origin also serves sandboxed artifact pages, whose origin is opaque;
+- check the committed document, frame and effective origin of every call that comes from the page, not a URL provided by the page. The server's origin also serves sandboxed artifact pages whose origin is opaque. WKWebView checks `frameInfo.isMainFrame` and `frameInfo.securityOrigin`. WebView2 receives only top-level messages, checks `Source`, and accepts a fresh document lease that its bootstrap receives only after checking `window.top` and `window.origin`;
 - give the page no Node.js, and keep its sandbox and context isolation on.
 
 Pi Pocket gives the app bridge nothing that the page could not do over the API itself: the notifications are the person's own, and an approval's answer goes through the same route and checks as a tap in the page.

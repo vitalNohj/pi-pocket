@@ -95,9 +95,8 @@ extension AppDelegate {
         if page?.generation != nextPage?.generation {
             let wasOpen = openWhenReady || settings?.window.isVisible == true
 
-            closeSessionWindows()
+            closeSessionWindows(keepUnboundNewSession: page == nil && nextPage != nil)
             page = nextPage
-            pendingSession = false
             checkedSignIn = false
             recovered = false
             pageCommitted = false
@@ -117,7 +116,8 @@ extension AppDelegate {
         }
     }
 
-    func closeSessionWindows() {
+    func closeSessionWindows(keepUnboundNewSession: Bool = false) {
+        sessionBridge.reset(keepUnboundNewSession: keepUnboundNewSession)
         for extra in Array(popups.keys) {
             if let observer = popups.removeValue(forKey: extra) { NotificationCenter.default.removeObserver(observer) }
             (extra.contentView as? WKWebView)?.configuration.userContentController.removeScriptMessageHandler(forName: "pocket")
@@ -159,7 +159,6 @@ extension AppDelegate {
         var data: [String: Any] = ["generation": page.generation, "committedOrigin": origin as Any? ?? NSNull()]
 
         if let hung = hung { data["hung"] = hung }
-        else { setBadge(0) }
         report("page", data)
     }
 
@@ -170,9 +169,12 @@ extension AppDelegate {
         case "window.open": openWindow()
         case "window.reload": frontView?.reload()
         case "window.newSession": newSession()
-        case "window.newWindow": if let page = page { popup(pageConfig(page)).load(URLRequest(url: page.address)) }
+        case "window.newWindow": newSessionWindow()
         case "window.pinned":
-            if let id = data["id"] as? String { openWindow(); sendPageEvent(webView, type: "open", fields: ["url": "/s/\(id)"]) }
+            if let id = data["id"] as? String {
+                openWindow()
+                if let view = webView { sessionBridge.openAddress("/s/\(id)", in: view) }
+            }
         case "window.back": frontView?.goBack()
         case "window.forward": frontView?.goForward()
         case "window.actualSize": actualSize()
@@ -257,33 +259,24 @@ extension AppDelegate {
         configuration.websiteDataStore = page.local ? localStore : .default()
         configuration.applicationNameForUserAgent = "PiPocketMac/\(appVersion)"
         configuration.preferences.isElementFullscreenEnabled = true
-        if page.bridge, let origin = pageOrigin(page.address) {
-            configuration.userContentController.addUserScript(
-                WKUserScript(source: bridgeScript(origin: origin), injectionTime: .atDocumentStart, forMainFrameOnly: true))
-            configuration.userContentController.add(self, name: "pocket")
-        }
+        if page.bridge { sessionBridge.install(configuration, address: page.address) }
         return configuration
     }
 
-    func newSession() {
-        let target = frontView
-        if let target = target, target.window?.isVisible == true {
-            target.window?.makeKeyAndOrderFront(nil)
-            sendPageEvent(target, type: "newSession")
-        } else {
-            pendingSession = true
-            openWindow()
-            if pageCommitted { sendPageEvent(webView, type: "newSession"); pendingSession = false }
-        }
+    func newSession() { sessionBridge.newSession() }
+
+    func newSessionWindow() {
+        if let page = page { popup(pageConfig(page)).load(URLRequest(url: page.address)) }
     }
 
-    func sendPageEvent(_ view: WKWebView?, type: String, fields: [String: Any] = [:]) {
-        guard let view = view, page?.bridge == true, sameOrigin(view.url), let origin = pageOrigin(view.url) else { return }
-        var event = fields
-
-        event["type"] = type
-        view.callAsyncJavaScript("if (location.origin === origin && window.origin === origin) window.__pocketHostEvent?.(event)",
-            arguments: ["origin": origin, "event": event], in: nil, in: .page) { _ in }
+    func bridgeAction(_ action: String) {
+        if quitting { return }
+        switch action {
+        case "new-session": newSession()
+        case "new-window": newSessionWindow()
+        case "server-settings": openSettings(nil)
+        default: break
+        }
     }
 
     func setBadge(_ count: Int) {

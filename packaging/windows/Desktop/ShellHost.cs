@@ -20,7 +20,6 @@ namespace PiPocket
         bool localPage;
         bool pageBridge;
         bool restartingServer;
-        bool pendingSession;
         string[] otherOrigins = new string[0];
 
         internal bool ShowMenuBar { get { return ShellWire.Flag(WindowPreferences, "showMenuBar"); } }
@@ -30,7 +29,7 @@ namespace PiPocket
         internal bool PageBridge { get { return pageBridge; } }
         internal string[] OtherOrigins { get { return otherOrigins; } }
         object WindowPreferences { get { return ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "window"); } }
-        bool NotificationsEnabled { get { return snapshot == null || ShellWire.Flag(ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "notifications"), "enabled"); } }
+        internal bool NotificationsEnabled { get { return snapshot == null || ShellWire.Flag(ShellWire.Get(ShellWire.Get(snapshot, "preferences"), "notifications"), "enabled"); } }
 
         async void StartShell()
         {
@@ -53,7 +52,7 @@ namespace PiPocket
             controller = new ShellController(start, packet => OnUi(delegate { ControllerPacket(packet); }),
                 () => OnUi(delegate
                 {
-                    if (!quitting) { ShowBalloon("Pi Pocket", "Desktop Settings could not connect to the controller. Try reinstalling Pi Pocket.", ToolTipIcon.Warning, null); }
+                    LocalNotice("Desktop Settings could not connect to the controller. Try reinstalling Pi Pocket.");
                 }));
             Task<object> subscribed = controller.Call("subscribe");
             if (openWhenReady && fresh) { OpenSettings("home"); }
@@ -96,12 +95,10 @@ namespace PiPocket
 
             if (generation != pageGeneration)
             {
-                try { CloseWindows(); }
+                try { CloseWindows(keepUnboundNewSession: pageGeneration == 0); }
                 catch (InvalidOperationException) { }
                 pageGeneration = generation;
                 SetBadge(0);
-                balloons.Clear();
-                balloonAddress = null;
                 edgeFallback = false;
                 pageAddress = ShellWire.Text(active, "address");
                 ready = pageAddress != null;
@@ -139,7 +136,7 @@ namespace PiPocket
             var value = new Dictionary<string, object> { { "id", action } };
             if (data != null) { value.Add("data", data); }
             try { await controller.Call("action", value); }
-            catch (InvalidOperationException error) { ShowBalloon("Pi Pocket", error.Message, ToolTipIcon.Info, null); }
+            catch (InvalidOperationException error) { LocalNotice(error.Message); }
         }
 
         internal async void Report(string name, object data)
@@ -154,7 +151,6 @@ namespace PiPocket
             if (page != window) { return; }
             var data = new Dictionary<string, object> { { "generation", pageGeneration }, { "committedOrigin", origin } };
             if (hung.HasValue) { data.Add("hung", hung.Value); }
-            else { SetBadge(0); }
             Report("page", data);
         }
 
@@ -167,10 +163,7 @@ namespace PiPocket
                 case "settings.back": BackToPage(); break;
                 case "window.open": OpenWindow(); break;
                 case "window.reload": if (front != null && front.Browser != null) { front.Browser.Reload(); } break;
-                case "window.newSession":
-                    if (front == null) { pendingSession = true; OpenWindow(); }
-                    else { front.ShowWindow(); front.NewSession(); }
-                    break;
+                case "window.newSession": Bridge.NewSession(); break;
                 case "window.newWindow": await NewSessionWindow(); break;
                 case "window.back": if (front != null && front.Browser != null && front.Browser.CanGoBack) { front.Browser.GoBack(); } break;
                 case "window.forward": if (front != null && front.Browser != null && front.Browser.CanGoForward) { front.Browser.GoForward(); } break;
@@ -218,7 +211,7 @@ namespace PiPocket
                 settings.Activate();
                 return;
             }
-            ShellSettings made = new ShellSettings(tray.Icon, (command, data) => controller.Call(command, data));
+            ShellSettings made = new ShellSettings(baseIcon, (command, data) => controller.Call(command, data));
             settings = made;
             made.Disposed += delegate { if (settings == made) { settings = null; } };
             made.SelectSection(section);
@@ -232,7 +225,7 @@ namespace PiPocket
             {
                 if (made.IsDisposed) { return; }
                 made.Dispose();
-                if (!quitting) { ShowBalloon("Pi Pocket", "Desktop Settings could not open. Install the WebView2 Runtime or run Setup again.", ToolTipIcon.Warning, null); }
+                LocalNotice("Desktop Settings could not open. Install the WebView2 Runtime or run Setup again.");
             }
         }
 

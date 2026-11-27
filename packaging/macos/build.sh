@@ -190,6 +190,7 @@ mkdir "$bundle/Resources/desktop-assets"
 for name in controller protocol settings feed; do
     cp -R "$repo/packaging/desktop/$name" "$bundle/Resources/desktop-assets/"
 done
+cp "$here/../desktop/bridge/bootstrap.js" "$bundle/Resources/PocketBridge.js"
 if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp "$root/Pi Pocket.app"
 else

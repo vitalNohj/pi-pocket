@@ -65,6 +65,13 @@ jobs:
                   packaging/macos/build.sh "$VERSION" "$RUNNER_TEMP/pkg"
                   echo "The package is $(du -h "$PKG" | cut -f 1)"
 
+            - name: Test native messages and notification actions
+              run: |
+                  swiftc -swift-version 5 -framework Cocoa -framework WebKit -framework UserNotifications \
+                      -o "$RUNNER_TEMP/bridge-tests" packaging/macos/app/desktop/Bridge*.swift \
+                      packaging/macos/app/desktop/Notices*.swift test/desktop/BridgeMacTests.swift
+                  "$RUNNER_TEMP/bridge-tests"
+
             - name: Check the package
               run: |
                   domains="$(installer -pkg "$PKG" -dominfo)"
@@ -328,6 +335,16 @@ jobs:
                   again="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url$path")"
                   echo "The one-time link answered $code, then /api/me $me, and the link again $again"
                   [ "$code" = 303 ] && [ "$me" = 200 ] && [ "$again" = 401 ]
+
+            - name: Open the New Session picker through LaunchServices
+              run: |
+                  open -a "$BUNDLE" 'pi-pocket://new'
+                  for try in $(seq 1 30); do
+                      grep -qF 'Delivered New Session to the Pi Pocket page.' "$LOG" && break
+                      sleep 1
+                  done
+                  test "$(grep -cF 'Delivered New Session to the Pi Pocket page.' "$LOG")" -eq 1
+                  test "$(pgrep -f 'Pi Pocket.app/Contents/MacOS/Pi Pocket' | wc -l | tr -d ' ')" -eq 1
 
             - name: Take a screenshot of the window
               continue-on-error: true

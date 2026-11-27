@@ -7,6 +7,8 @@ import {
     actions,
     attempt,
     canSteer,
+    embedderAccount,
+    embedderAccountReady,
     navigate,
     notify,
     onEmbedderNotify,
@@ -18,7 +20,7 @@ import {
 /** The longest list of pinned sessions the embedder gets: a tray menu shows a few. */
 const MAX_PINNED = 20;
 
-export function openAddress(address) {
+export async function openAddress(address) {
     let url;
 
     try {
@@ -27,19 +29,41 @@ export function openAddress(address) {
         return;
     }
 
-    if (url.origin !== location.origin) {
+    if (url.origin !== location.origin || url.username || url.password) {
         return;
     }
 
-    if (url.searchParams.has("pip")) {
+    const match = /^\/s\/(\d+)$/.exec(url.pathname);
+    const id = match ? Number(match[1]) : null;
+    const pip = url.pathname === "/" && url.search === "?pip=1";
+
+    if (hostCan("sessionFeed")) {
+        if (
+            address !== "/" &&
+            address !== "/?pip=1" &&
+            !(
+                typeof address === "string" &&
+                /^\/s\/[1-9]\d*$/.test(address) &&
+                Number.isSafeInteger(id)
+            )
+        ) {
+            return;
+        }
+
+        if (!(await embedderAccount(id))) {
+            notify("error", "This session link is no longer available. Open it from Pi Pocket.");
+
+            return;
+        }
+    }
+
+    if (pip || (!hostCan("sessionFeed") && url.searchParams.has("pip"))) {
         openPip();
 
         return;
     }
 
-    const match = /^\/s\/(\d+)$/.exec(url.pathname);
-
-    navigate(match ? Number(match[1]) : null);
+    navigate(id);
 }
 
 /**
@@ -68,7 +92,17 @@ export function openNewSession() {
 
 if (host !== null) {
     if (hostCan("newSession")) {
-        onHost("newSession", () => openNewSession());
+        onHost("newSession", () => {
+            if (!hostCan("sessionFeed")) {
+                openNewSession();
+            } else {
+                void embedderAccount().then((ready) => {
+                    if (ready) {
+                        openNewSession();
+                    }
+                });
+            }
+        });
     }
 
     if (hostCan("notify")) {
@@ -76,6 +110,15 @@ if (host !== null) {
         onHost("open", (event) => openAddress(event.url));
         onHost("approve", (event) =>
             attempt(async () => {
+                if (hostCan("sessionFeed") && !(await embedderAccount())) {
+                    notify(
+                        "error",
+                        "This notification is no longer current. Review the approval in Pi Pocket.",
+                    );
+
+                    return;
+                }
+
                 await actions.approve(String(event.id), event.allow === true);
             }).then(() => undefined),
         );
@@ -87,10 +130,15 @@ if (host !== null) {
         let from = null;
         let pinnedSent = "";
 
+        addEventListener("pocket:bridge-reset", () => {
+            from = null;
+            pinnedSent = "";
+        });
         store.subscribe((state) => {
             if (
-                !state.me ||
-                (from?.sessions === state.sessions &&
+                !embedderAccountReady() ||
+                (from?.me === state.me &&
+                    from.sessions === state.sessions &&
                     from.pinned === state.pinned &&
                     from.unread === state.unread &&
                     from.peekSeen === state.peekSeen)
@@ -99,6 +147,7 @@ if (host !== null) {
             }
 
             from = {
+                me: state.me,
                 sessions: state.sessions,
                 pinned: state.pinned,
                 unread: state.unread,
