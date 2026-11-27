@@ -42,10 +42,10 @@ final class StatusMenuFixture: NSObject {
         guard let page = app.page, !page.local, page.address.scheme == "http", page.address.host == "127.0.0.1",
             page.address.path == "/pocket", let item = app.statusItem, item.menu != nil, let button = item.button else { return }
 
-        // Build real NSMenuItems with the status item's update hook, without touching a live menu.
+        // Build real NSMenuItems with the status menu builder, without touching a live menu.
         let menu = NSMenu()
         menu.autoenablesItems = false
-        app.menuNeedsUpdate(menu)
+        app.fillMenu(menu, key: "tray")
         var model: [String: Any] = [
             "badge": button.title,
             "hidden": app.window?.isVisible == false,

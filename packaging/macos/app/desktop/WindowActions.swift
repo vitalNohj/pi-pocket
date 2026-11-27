@@ -121,7 +121,9 @@ extension AppDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        if menu.title == "Window options" {
+        if menu === statusItem?.menu {
+            fillMenu(menu, key: "tray")
+        } else if menu.title == "Window options" {
             menu.removeAllItems()
             addWindowOptions(to: menu)
         }

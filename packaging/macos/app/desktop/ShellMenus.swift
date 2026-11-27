@@ -79,8 +79,6 @@ extension AppDelegate: NSMenuDelegate, NSMenuItemValidation {
         setBadge(0)
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) { fillMenu(menu, key: "tray") }
-
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
 
