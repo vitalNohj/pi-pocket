@@ -140,6 +140,11 @@ namespace PiPocket
                     return 0;
                 }
 
+                if (DesktopUpdates.TakeStagedUpdate(hidden))
+                {
+                    return 0;
+                }
+
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 TrayApp app = new TrayApp(hidden);
@@ -404,7 +409,8 @@ namespace PiPocket
                 version = null;
             }
 
-            if (version == null || !File.Exists(Path.Combine(appDir, @"app\setup-finished.txt")))
+            string marker = Path.Combine(appDir, @"app\setup-finished.txt");
+            if (version == null || !File.Exists(marker))
             {
                 return new string[]
                 {
@@ -414,12 +420,13 @@ namespace PiPocket
                 };
             }
 
-            if (!string.Equals(Program.Version, "0.0.0-dev") && Program.CompareVersions(version, Program.Version) < 0)
+            string minimum = DesktopUpdates.RuntimeFloor(marker);
+            if (!string.Equals(minimum, "0.0.0-dev") && Program.CompareVersions(version, minimum) < 0)
             {
                 return new string[]
                 {
                     "The pi-pocket package of Pi Pocket is version " + version + ", older than this app (" +
-                        Program.Version + ").",
+                        minimum + ").",
                     "Setup did not finish putting the package in place, so Pi Pocket cannot start. " + again
                 };
             }

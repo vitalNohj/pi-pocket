@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Pi Pocket Desktop Update</title>
+    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <allowed-os-versions>
+        <os-version min="13.5"/>
+    </allowed-os-versions>
+    <choices-outline>
+        <line choice="desktop"/>
+    </choices-outline>
+    <choice id="desktop" visible="false" selected="true">
+        <pkg-ref id="io.github.tannermidd.pi-pocket.desktop-update"/>
+    </choice>
+    <pkg-ref id="io.github.tannermidd.pi-pocket.desktop-update" version="@VERSION@" onConclusion="none">desktop-update.pkg</pkg-ref>
+</installer-gui-script>

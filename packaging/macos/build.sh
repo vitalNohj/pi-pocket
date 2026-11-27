@@ -3,7 +3,7 @@
 # checked against the SHA256 below and joined with lipo, and the pi-pocket package (packaging/bundle-app.mjs), so the
 # install needs no npm and no network.
 #
-#   packaging/macos/build.sh <version> [out folder] [--source <checkout>]
+#   packaging/macos/build.sh <version> [out folder] [--source <checkout>] [--with-desktop-update | --desktop-only]
 #
 # --source is the checkout to pack (default: the one this script is in), with <version> in its package.json.
 # The package is unsigned: the workflow signs it when it has the secrets.
@@ -20,9 +20,20 @@ repo="$(cd "$here/../.." && pwd -P)"
 version=""
 out="$here/out"
 checkout="$repo"
+desktop_only=false
+with_desktop_update=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --desktop-only)
+            desktop_only=true
+            with_desktop_update=true
+            shift
+            ;;
+        --with-desktop-update)
+            with_desktop_update=true
+            shift
+            ;;
         --source)
             checkout="$2"
             shift 2
@@ -69,6 +80,10 @@ download() {
     echo "SHA256 matches: $actual"
 }
 
+root="$work/root"
+mkdir -p "$root"
+
+build_runtime() {
 for arch in arm64 x64; do
     name="node-v$NODE_VERSION-darwin-$arch"
     sha256="$NODE_SHA256_ARM64"
@@ -115,8 +130,6 @@ mv -f "$work/node-universal" "$node_dir/bin/node"
 chmod 755 "$node_dir/bin/node"
 lipo -info "$node_dir/bin/node"
 
-root="$work/root"
-mkdir -p "$root"
 mv "$node_dir" "$root/node"
 cp "$here/pi-pocket" "$here/Pi Pocket.command" "$here/place-app.mjs" "$here/stop-pi-pocket.sh" \
     "$here/login-item.sh" "$here/uninstall.sh" "$root/"
@@ -135,6 +148,11 @@ if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
                 ;;
         esac
     done < <(find "$root/app.new" -type f \( -name '*.node' -o -name '*.dylib' -o -name '*.so' -o -perm -u+x \) -print0)
+fi
+}
+
+if ! $desktop_only; then
+    build_runtime
 fi
 
 iconset="$work/pi-pocket.iconset"
@@ -169,7 +187,7 @@ chmod 755 "$bundle/MacOS/Pi Pocket"
 lipo -info "$bundle/MacOS/Pi Pocket"
 cp "$work/pi-pocket.icns" "$bundle/Resources/pi-pocket.icns"
 mkdir "$bundle/Resources/desktop-assets"
-for name in controller protocol settings; do
+for name in controller protocol settings feed; do
     cp -R "$repo/packaging/desktop/$name" "$bundle/Resources/desktop-assets/"
 done
 if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
@@ -179,6 +197,13 @@ else
 fi
 
 codesign --verify --strict --all-architectures --verbose=2 "$root/Pi Pocket.app"
+
+if $with_desktop_update; then
+    "$here/build-desktop-update.sh" "$version" "$out" "$root/Pi Pocket.app"
+fi
+if $desktop_only; then
+    exit 0
+fi
 
 # A shell script that opens the launcher in Terminal, for access modes, tunnels, and the sign-in QR code.
 console="$root/Pi Pocket (console).app/Contents"

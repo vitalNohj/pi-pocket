@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=packaging/macos/scripts/desktop-update/target.sh
+. "$(dirname "$0")/target.sh"
+payload="$2/Pi Pocket.app"
+target="$(desktop_target "$2")"
+/usr/bin/codesign --verify --strict --all-architectures "$payload"
+
+# Stage and replace only the desktop bundle. Keep the old bundle if the move fails.
+backup="$(mktemp -d "$(dirname "$target")/.pi-pocket-desktop.XXXXXX")"
+mv "$target" "$backup/Pi Pocket.app"
+if ! mv "$payload" "$target"; then
+    mv "$backup/Pi Pocket.app" "$target"
+    rmdir "$backup"
+    exit 1
+fi
+rm -rf "$backup"
+rmdir "$2" 2>/dev/null || true
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$target" 2>/dev/null || true

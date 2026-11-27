@@ -7,14 +7,16 @@
 #ifndef AppVersion
   #error Define AppVersion, such as /DAppVersion=0.30.0
 #endif
-#ifndef NodeDir
-  #error Define NodeDir, the folder of the unpacked Node.js zip
-#endif
 #ifndef DesktopDir
   #error Define DesktopDir, the folder of the compiled Pi Pocket.exe
 #endif
-#ifndef AppDir
-  #error Define AppDir, the npm prefix with the pi-pocket package that bundle-app.mjs made
+#ifndef DesktopUpdate
+  #ifndef NodeDir
+    #error Define NodeDir, the folder of the unpacked Node.js zip
+  #endif
+  #ifndef AppDir
+    #error Define AppDir, the npm prefix with the pi-pocket package that bundle-app.mjs made
+  #endif
 #endif
 #ifndef OutputDir
   #define OutputDir "out"
@@ -38,7 +40,14 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 OutputDir={#OutputDir}
+#ifdef DesktopUpdate
+OutputBaseFilename=Pi-Pocket-Desktop-Update-{#AppVersion}
+AppMutex=Local\Pi Pocket desktop app
+Uninstallable=no
+CreateUninstallRegKey=no
+#else
 OutputBaseFilename=Pi-Pocket-Setup-{#AppVersion}
+#endif
 SetupIconFile=pi-pocket.ico
 UninstallDisplayIcon={app}\Pi Pocket.exe
 UninstallDisplayName=Pi Pocket
@@ -53,6 +62,7 @@ SignTool=signtool
 SignedUninstaller=yes
 #endif
 
+#ifndef DesktopUpdate
 [Tasks]
 Name: startup; Description: "Start Pi Pocket when I sign in to Windows"; Flags: unchecked
 
@@ -65,16 +75,20 @@ Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Tasks: not startup
 Type: filesandordirs; Name: "{app}\app"; Check: ReplaceApp
 Type: files; Name: "{app}\install-app.mjs"
 Type: files; Name: "{app}\install.log"
+#endif
 
 [Files]
+#ifndef DesktopUpdate
 Source: "{#NodeDir}\*"; DestDir: "{app}\node"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#AppDir}\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: ReplaceApp
+#endif
 Source: "{#DesktopDir}\Pi Pocket.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\Microsoft.Web.WebView2.Core.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\Microsoft.Web.WebView2.WinForms.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\WebView2-License.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#DesktopDir}\desktop-assets\*"; DestDir: "{app}\desktop-assets"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifndef DesktopUpdate
 Source: "pi-pocket.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pi-pocket.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -101,10 +115,22 @@ Type: filesandordirs; Name: "{localappdata}\Pi Pocket\desktop"
 Type: filesandordirs; Name: "{localappdata}\Pi Pocket\WebView2 profile"
 ; Also remove the separate profile that older installs and the missing-Runtime fallback use.
 Type: filesandordirs; Name: "{app}\Edge profile"
+Type: filesandordirs; Name: "{app}\desktop-update-cache"
 Type: dirifempty; Name: "{app}"
 Type: dirifempty; Name: "{localappdata}\Pi Pocket"
+#endif
 
 [Code]
+#ifdef DesktopUpdate
+{ The update cannot install a runtime, change startup shortcuts, or stop Pi Pocket. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if not FileExists(ExpandConstant('{app}\Pi Pocket.exe')) or
+    not FileExists(ExpandConstant('{app}\app\setup-finished.txt')) then
+    Result := 'This desktop update needs an existing Pi Pocket install.';
+end;
+#else
 var
   KeepApp: Boolean;
 
@@ -407,3 +433,4 @@ begin
     'Choose No to keep it.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
     DelTree(Data, True, True, True);
 end;
+#endif
