@@ -465,7 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         window = made
         webView = view
         notice = strip
-        if page.bridge, let origin = pageOrigin(page.address) { sessionBridge.add(view, origin: origin) }
+        if page.bridge { sessionBridge.add(view, address: page.address) }
         pageNotice(page.bridge ? nil : "Sign in on this page to use Pi Pocket")
         made.makeKeyAndOrderFront(nil)
         if page.local, let server = local { signIn(server, generation: page.generation) }
@@ -692,7 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         made.delegate = self
         made.tabbingMode = .disallowed
         made.center()
-        if let page = page, page.bridge, let origin = pageOrigin(page.address) { sessionBridge.add(view, origin: origin) }
+        if let page = page, page.bridge { sessionBridge.add(view, address: page.address) }
         popups[made] = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: made, queue: .main
         ) { [weak self] _ in

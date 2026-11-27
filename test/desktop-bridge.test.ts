@@ -20,9 +20,15 @@ type Host = {
 };
 
 function fixture(
-    options: { frame?: boolean; origin?: string; path?: string; events?: string[] } = {},
+    options: {
+        frame?: boolean;
+        origin?: string;
+        basePath?: string;
+        path?: string;
+        events?: string[];
+    } = {},
 ) {
-    const { frame, origin: effective = origin, path = "/s/2", events } = options;
+    const { frame, origin: effective = origin, basePath = "", path = "/s/2", events } = options;
     const outgoing: Packet[] = [];
     const incoming: Packet[] = [];
     let receive: ((packet: Packet) => void) | undefined;
@@ -36,7 +42,12 @@ function fixture(
     runInNewContext(script.replace("/* POCKET_BRIDGE_ARGUMENTS */", "config, transport"), {
         window,
         location: { origin, protocol: "https:", pathname: path },
-        config: { origin, kind: "test", items: [{ id: "settings", label: "Desktop Settings…" }] },
+        config: {
+            origin,
+            basePath,
+            kind: "test",
+            items: [{ id: "settings", label: "Desktop Settings…" }],
+        },
         transport: {
             send: (packet: Packet) => outgoing.push(structuredClone(packet)),
             listen: (next: (packet: Packet) => void) => {
@@ -58,6 +69,24 @@ test("the desktop bootstrap is confined to the top-level Pi Pocket page at the e
     assert.equal(fixture({ path: "/login" }).host, undefined);
     assert.equal(fixture({ path: "/preview" }).host, undefined);
     assert.ok(fixture().host);
+});
+
+test("the bootstrap allows only Pi Pocket pages under the configured base path", () => {
+    const basePath = "/gateway/pocket";
+
+    assert.ok(fixture({ basePath, path: basePath }).host);
+    assert.ok(fixture({ basePath, path: `${basePath}/` }).host);
+    assert.ok(fixture({ basePath, path: `${basePath}/s/2` }).host);
+
+    for (const path of [
+        "/",
+        "/s/2",
+        `${basePath}/preview`,
+        `${basePath}-other/s/2`,
+        `${basePath}%2Fs/2`,
+    ]) {
+        assert.equal(fixture({ basePath, path }).host, undefined, path);
+    }
 });
 
 test("a secondary caches only its snapshot; promotion, auth reset and document replacement update the lease", () => {

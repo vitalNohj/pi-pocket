@@ -63,7 +63,11 @@ namespace PiPocket
                 id <= 9007199254740991L);
         }
 
-        public static bool IsPage(string path) { return path == "/" || (path.StartsWith("/s/", StringComparison.Ordinal) && IsTarget(path)); }
+        public static bool IsPage(string path, string basePath)
+        {
+            return path == basePath + "/" || (basePath.Length != 0 && path == basePath) ||
+                (path.StartsWith(basePath + "/s/", StringComparison.Ordinal) && IsTarget(path.Substring(basePath.Length)));
+        }
 
         public static string Text(IDictionary<string, object> body, string name, int limit)
         {

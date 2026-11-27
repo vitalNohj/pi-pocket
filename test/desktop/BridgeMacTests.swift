@@ -14,6 +14,15 @@ struct BridgeMacTests {
             precondition(!BridgeProtocol.target(url), "noncanonical notification URL")
         }
         precondition(BridgeProtocol.target("/s/9007199254740991") && BridgeProtocol.target("/?pip=1"))
+        let origin = "https://pocket-fixture.invalid"
+        let basePath = "/gateway/team%20one"
+        precondition(BridgeProtocol.basePath(URL(string: origin + basePath + "/")!) == basePath)
+        for path in [basePath, basePath + "/", basePath + "/s/2"] {
+            precondition(BridgeProtocol.page(URL(string: origin + path)!, basePath: basePath), "page under the configured base path")
+        }
+        for path in ["/", "/s/2", basePath + "/preview", basePath + "-other/s/2"] {
+            precondition(!BridgeProtocol.page(URL(string: origin + path)!, basePath: basePath), "outside the configured Pi Pocket pages")
+        }
         precondition(BridgeProtocol.number(true, max: 20) == nil)
         precondition(BridgeProtocol.number(2.5, max: 20) == nil)
         precondition(BridgeProtocol.number(2, max: 20) == 2)

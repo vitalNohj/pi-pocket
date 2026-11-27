@@ -31,6 +31,13 @@ namespace PiPocket
                 Check(!BridgeProtocol.IsTarget(url), "Reject noncanonical notice URL: " + url);
             }
             Check(BridgeProtocol.IsTarget("/s/9007199254740991") && BridgeProtocol.IsTarget("/?pip=1"), "Accept session and PiP");
+            const string basePath = "/gateway/pocket";
+            Check(BridgeProtocol.IsPage(basePath, basePath) && BridgeProtocol.IsPage(basePath + "/", basePath) &&
+                BridgeProtocol.IsPage(basePath + "/s/2", basePath), "Allow pages under the configured base path");
+            foreach (var path in new[] { "/", "/s/2", basePath + "/preview", basePath + "-other/s/2" })
+            {
+                Check(!BridgeProtocol.IsPage(path, basePath), "Reject routes outside the configured Pi Pocket pages: " + path);
+            }
             Check(BridgeProtocol.Recognises(path => path == "/api/pocket/info"
                 ? "{\"name\":\"pi-pocket\",\"bridge\":1}" : "{}"), "Recognize bridge v1");
             Check(BridgeProtocol.Recognises(path => {
@@ -72,10 +79,11 @@ namespace PiPocket
         static void CheckFrame()
         {
             const string origin = "https://pocket-fixture.invalid";
+            const string basePath = "/gateway/pocket";
             const string top = @"<!doctype html><script>
                 addEventListener('message', (e) => chrome.webview.postMessage(e.data));
                 pocketHost.subscribe(() => {});
-            </script><iframe sandbox='allow-scripts' src='/s/2'></iframe>";
+            </script><iframe sandbox='allow-scripts' src='" + basePath + @"/s/2'></iframe>";
             const string frame = @"<!doctype html><script>
                 parent.postMessage({ absent: !('pocketHost' in window), opaque: window.origin === 'null' }, '*');
             </script>";
@@ -99,19 +107,19 @@ namespace PiPocket
                             CoreWebView2WebResourceRequestSourceKinds.Document);
                         core.WebResourceRequested += delegate (object sender, CoreWebView2WebResourceRequestedEventArgs args)
                         {
-                            string html = new Uri(args.Request.Uri).AbsolutePath == "/" ? top : frame;
+                            string html = new Uri(args.Request.Uri).AbsolutePath == basePath ? top : frame;
                             args.Response = environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(html)),
                                 200, "OK", "Content-Type: text/html; charset=utf-8");
                         };
                         core.WebMessageReceived += delegate (object sender, CoreWebView2WebMessageReceivedEventArgs args)
                         {
                             var message = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(args.WebMessageAsJson);
-                            reported = args.Source == origin + "/" && BridgeProtocol.Flag(message, "absent") &&
+                            reported = args.Source == origin + basePath && BridgeProtocol.Flag(message, "absent") &&
                                 BridgeProtocol.Flag(message, "opaque");
                             form.BeginInvoke((MethodInvoker)form.Close);
                         };
-                        await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeView.Script(origin));
-                        core.Navigate(origin + "/");
+                        await core.AddScriptToExecuteOnDocumentCreatedAsync(BridgeView.Script(origin, basePath));
+                        core.Navigate(origin + basePath);
                     }
                     catch (Exception error) { failure = error; form.Close(); }
                 };

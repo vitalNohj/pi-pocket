@@ -26,8 +26,20 @@ enum BridgeProtocol {
             (Int64(path.dropFirst(3)) ?? .max) <= 9_007_199_254_740_991
     }
 
-    static func page(_ url: URL) -> Bool {
-        url.path == "/" || (url.path.hasPrefix("/s/") && target(url.path))
+    private static func encodedPath(_ url: URL) -> String {
+        URLComponents(url: url, resolvingAgainstBaseURL: true)?.percentEncodedPath ?? ""
+    }
+
+    static func basePath(_ url: URL) -> String {
+        var path = encodedPath(url)
+        while path.hasSuffix("/") { path.removeLast() }
+        return path
+    }
+
+    static func page(_ url: URL, basePath: String) -> Bool {
+        let path = encodedPath(url)
+        return path == basePath + "/" || (!basePath.isEmpty && path == basePath) ||
+            (path.hasPrefix(basePath + "/s/") && target(String(path.dropFirst(basePath.count))))
     }
 
     static func number(_ value: Any?, max: Int) -> Int? {
@@ -79,6 +91,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
     final class Document {
         weak var view: WKWebView?
         let origin: String
+        let basePath: String
         var navigation: WKNavigation?
         var lease: String?
         var events: Set<String>?
@@ -87,7 +100,11 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
         var modern: Bool { events?.contains("primary") == true }
         var shown: Bool { view?.window?.isVisible == true && view?.window?.isMiniaturized == false }
 
-        init(_ view: WKWebView, _ origin: String) { self.view = view; self.origin = origin }
+        init(_ view: WKWebView, origin: String, basePath: String) {
+            self.view = view
+            self.origin = origin
+            self.basePath = basePath
+        }
 
         func send(_ type: String, _ fields: [String: Any] = [:]) {
             guard let lease = lease, let view = view, let url = view.url, BridgeProtocol.origin(url) == origin else { return }
@@ -141,11 +158,12 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
         self.notificationsEnabled = notificationsEnabled
     }
 
-    func install(_ configuration: WKWebViewConfiguration, origin: String) {
-        guard let file = Bundle.main.url(forResource: "PocketBridge", withExtension: "js"),
+    func install(_ configuration: WKWebViewConfiguration, address: URL) {
+        guard let origin = BridgeProtocol.origin(address),
+            let file = Bundle.main.url(forResource: "PocketBridge", withExtension: "js"),
             let source = try? String(contentsOf: file, encoding: .utf8),
             let data = try? JSONSerialization.data(withJSONObject: [
-                "kind": "pi-pocket-macos", "origin": origin, "items": [
+                "kind": "pi-pocket-macos", "origin": origin, "basePath": BridgeProtocol.basePath(address), "items": [
                     ["id": "new-session", "label": "New session"], ["id": "new-window", "label": "New window"],
                     ["id": "server-settings", "label": "Desktop Settings…"],
                 ],
@@ -165,7 +183,11 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
 
     private func document(_ view: WKWebView) -> Document? { documents.first(where: { $0.view === view }) }
 
-    func add(_ view: WKWebView, origin: String) { documents.append(Document(view, origin)) }
+    func add(_ view: WKWebView, address: URL) {
+        if let origin = BridgeProtocol.origin(address) {
+            documents.append(Document(view, origin: origin, basePath: BridgeProtocol.basePath(address)))
+        }
+    }
 
     func focus(_ view: WKWebView) {
         if let index = documents.firstIndex(where: { $0.view === view }) {
@@ -209,7 +231,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
 
     func loaded(_ view: WKWebView, _ navigation: WKNavigation?) {
         guard let doc = document(view), let url = view.url, BridgeProtocol.origin(url) == doc.origin,
-            BridgeProtocol.page(url), navigation === doc.navigation else { return }
+            BridgeProtocol.page(url, basePath: doc.basePath), navigation === doc.navigation else { return }
         doc.lease = UUID().uuidString
         doc.send("bind", ["visible": doc.shown])
     }

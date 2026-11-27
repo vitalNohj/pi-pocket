@@ -17,7 +17,7 @@ namespace PiPocket
         readonly BridgeWindows windows;
         readonly PocketWindow window;
         readonly CoreWebView2 browser;
-        readonly string origin;
+        readonly string origin, basePath;
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 65536, RecursionLimit = 10 };
         HashSet<string> events;
         readonly HashSet<string> actions = new HashSet<string> { "new-session", "new-window", "server-settings" };
@@ -31,12 +31,14 @@ namespace PiPocket
         public bool Subscribed { get { return events != null; } }
         public bool Modern { get { return Can("primary"); } }
 
-        public BridgeView(BridgeWindows windows, PocketWindow window, CoreWebView2 browser, string origin, Action<string> action)
+        public BridgeView(BridgeWindows windows, PocketWindow window, CoreWebView2 browser, string origin, string basePath,
+            Action<string> action)
         {
             this.window = window;
             this.windows = windows;
             this.browser = browser;
             this.origin = origin;
+            this.basePath = basePath;
             this.action = action;
         }
 
@@ -55,7 +57,7 @@ namespace PiPocket
             browser.DOMContentLoaded += delegate (object sender, CoreWebView2DOMContentLoadedEventArgs args)
             {
                 if (args.NavigationId == navigation && PocketWindow.IsServerAddress(browser.Source, origin) &&
-                    BridgeProtocol.IsPage(new Uri(browser.Source).AbsolutePath))
+                    BridgeProtocol.IsPage(new Uri(browser.Source).AbsolutePath, basePath))
                 {
                     Lease = Guid.NewGuid().ToString("N");
                     Push(new { type = "bind", key = Lease, visible = window.ShownToUser });
@@ -74,14 +76,14 @@ namespace PiPocket
                     windows.Replaced(this);
                 }
             };
-            return browser.AddScriptToExecuteOnDocumentCreatedAsync(Script(origin));
+            return browser.AddScriptToExecuteOnDocumentCreatedAsync(Script(origin, basePath));
         }
 
-        internal static string Script(string origin)
+        internal static string Script(string origin, string basePath)
         {
             var config = new
             {
-                origin = origin, kind = "pi-pocket-windows", items = new[] {
+                origin = origin, basePath = basePath, kind = "pi-pocket-windows", items = new[] {
                     new { id = "new-session", label = "New session" }, new { id = "new-window", label = "New window" },
                     new { id = "server-settings", label = "Desktop Settings…" },
                 },

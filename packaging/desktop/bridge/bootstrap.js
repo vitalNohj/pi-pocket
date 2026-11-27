@@ -1,11 +1,18 @@
 // Compiled into both hosts. The adapter supplies the origin, fixed menu items and the native transport.
 ((config, transport) => {
+    const { basePath } = config;
+    const path = location.pathname;
+    const page =
+        path === (basePath || "/") ||
+        (path.startsWith(`${basePath}/`) &&
+            /^(?:\/|\/s\/[1-9]\d*)$/.test(path.slice(basePath.length)));
+
     if (
         window.top !== window ||
         window.origin !== config.origin ||
         location.origin !== config.origin ||
         !["http:", "https:"].includes(location.protocol) ||
-        !/^(?:\/|\/s\/[1-9]\d*)$/.test(location.pathname)
+        !page
     ) {
         return;
     }

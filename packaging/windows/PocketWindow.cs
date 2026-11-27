@@ -14,7 +14,7 @@ namespace PiPocket
     sealed partial class PocketWindow : Form
     {
         readonly TrayApp host;
-        readonly string origin;
+        readonly string origin, basePath;
         readonly string boundsFile;
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 16384, RecursionLimit = 8 };
         readonly WebView2 view = new WebView2 { Dock = DockStyle.Fill };
@@ -25,10 +25,12 @@ namespace PiPocket
         readonly string[] allowed;
         BridgeView bridge;
 
-        public PocketWindow(TrayApp host, string origin, Icon icon, string boundsFile)
+        public PocketWindow(TrayApp host, string address, Icon icon, string boundsFile)
         {
             this.host = host;
-            this.origin = origin;
+            Uri server = new Uri(address);
+            origin = server.GetLeftPart(UriPartial.Authority);
+            basePath = server.AbsolutePath.TrimEnd('/');
             this.boundsFile = boundsFile;
             generation = host.PageGeneration;
             bridgeEnabled = host.PageBridge;
@@ -90,7 +92,7 @@ namespace PiPocket
 
             if (bridgeEnabled)
             {
-                bridge = new BridgeView(host.Bridge, this, core, origin, host.InvokeBridgeAction);
+                bridge = new BridgeView(host.Bridge, this, core, origin, basePath, host.InvokeBridgeAction);
                 await bridge.Attach();
             }
         }

@@ -259,16 +259,14 @@ extension AppDelegate {
         configuration.websiteDataStore = page.local ? localStore : .default()
         configuration.applicationNameForUserAgent = "PiPocketMac/\(appVersion)"
         configuration.preferences.isElementFullscreenEnabled = true
-        if page.bridge, let origin = pageOrigin(page.address) { sessionBridge.install(configuration, origin: origin) }
+        if page.bridge { sessionBridge.install(configuration, address: page.address) }
         return configuration
     }
 
     func newSession() { sessionBridge.newSession() }
 
     func newSessionWindow() {
-        if let page = page, let address = URL(string: "/", relativeTo: page.address)?.absoluteURL {
-            popup(pageConfig(page)).load(URLRequest(url: address))
-        }
+        if let page = page { popup(pageConfig(page)).load(URLRequest(url: page.address)) }
     }
 
     func bridgeAction(_ action: String) {
