@@ -1,5 +1,4 @@
 // This driver runs on the interactive Windows installer runner. It is not shipped with the app.
-using Accessibility;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -18,15 +17,11 @@ static class WindowInput
     struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)]
     struct Rect { public int Left, Top, Right, Bottom; }
-    [StructLayout(LayoutKind.Sequential)]
-    struct NotifyIconIdentifier { public uint Size; public IntPtr Window; public uint Id; public Guid Guid; }
     delegate bool Visitor(IntPtr window, IntPtr ignored);
 
-    [DllImport("shell32.dll")] static extern int Shell_NotifyIconGetRect(ref NotifyIconIdentifier icon, out Rect rect);
-    [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr window, uint objectId, ref Guid iid,
-        [MarshalAs(UnmanagedType.Interface)] out IAccessible accessible);
     [DllImport("user32.dll")] static extern bool EnumWindows(Visitor visit, IntPtr ignored);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out int pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int max);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
@@ -37,9 +32,7 @@ static class WindowInput
     [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr first, IntPtr second);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string kind, string title);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
-    [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
 
     [STAThread]
     static int Main(string[] args)
@@ -65,11 +58,16 @@ static class WindowInput
             }
             IntPtr window = WaitForWindow(pid, args[2]);
             if (operation == "find") { return 0; }
-            if (operation == "close")
+            if (operation == "close" || operation == "close-to-tray")
             {
                 if (!PostMessage(window, 0x0112, new IntPtr(0xF060), IntPtr.Zero))
                 {
                     throw new InvalidOperationException("Cannot close the installed window.");
+                }
+                if (operation == "close-to-tray")
+                {
+                    for (int i = 0; i < 25 && IsWindowVisible(window); i++) { Thread.Sleep(200); }
+                    if (IsWindowVisible(window)) { throw new InvalidOperationException("The installed window did not hide to the tray."); }
                 }
                 return 0;
             }
@@ -83,7 +81,7 @@ static class WindowInput
                 case "expect-field": WaitForFocusedField(window, args[3]); break;
                 case "expect-text": WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]); break;
                 case "expect-prefix": WaitForNamed(() => WithPrefix(AutomationElement.FromHandle(window), args[3]), args[3]); break;
-                case "press": ClickElement(WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]), false); break;
+                case "press": ClickElement(WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3])); break;
                 case "shot": Screenshot(window, args[3]); break;
                 case "dictation-menu": DictationMenu(pid, window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
@@ -138,131 +136,101 @@ static class WindowInput
         throw new InvalidOperationException("Could not see '" + name + "' in the installed app or notification area.");
     }
 
-    static void ClickElement(AutomationElement item, bool right)
+    static void ClickElement(AutomationElement item)
     {
         System.Windows.Point point;
         if (!item.TryGetClickablePoint(out point)) { throw new InvalidOperationException("The control cannot be clicked."); }
         if (!SetCursorPos((int)point.X, (int)point.Y)) { throw new InvalidOperationException("Cannot move the pointer to the control."); }
-        mouse_event(right ? 8u : 2u, 0, 0, 0, UIntPtr.Zero);
-        mouse_event(right ? 16u : 4u, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(2, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(4, 0, 0, 0, UIntPtr.Zero);
     }
 
-    static AutomationElement VisibleIcon()
+    static AutomationElement FindUI(int pid, string text, bool exact)
     {
-        foreach (string kind in new[] { "Shell_TrayWnd", "NotifyIconOverflowWindow", "TopLevelWindowForOverflowXamlIsland" })
-        {
-            IntPtr window = FindWindow(kind, null);
-            if (window == IntPtr.Zero || !IsWindowVisible(window)) { continue; }
-            var icon = Named(AutomationElement.FromHandle(window), "Pi Pocket");
-            if (icon != null && !icon.Current.IsOffscreen) { return icon; }
-        }
-        return null;
-    }
-
-    static void FocusNotificationArea()
-    {
-        // Win+B focuses the notification area without using the overflow button's localized name.
-        var taskbar = FindWindow("Shell_TrayWnd", null);
-        if (taskbar == IntPtr.Zero) { return; }
-        int explorer;
-        GetWindowThreadProcessId(taskbar, out explorer);
-        keybd_event(0x5B, 0, 1, UIntPtr.Zero); // VK_LWIN, extended key
-        keybd_event(0x42, 0, 0, UIntPtr.Zero); // B
-        keybd_event(0x42, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP
-        keybd_event(0x5B, 0, 3, UIntPtr.Zero);
-        Thread.Sleep(400);
-        var focused = AutomationElement.FocusedElement;
-        if (VisibleIcon() == null && focused != null && focused.Current.ProcessId == explorer)
-        {
-            SendKeys.SendWait("{ENTER}");
-            Thread.Sleep(600);
-        }
-    }
-
-    static bool OpenRegisteredTrayMenu(int pid)
-    {
-        // Some Explorer versions do not expose the overflow icons through UI Automation. Locate the
-        // installed app's registered WinForms NotifyIcon (the first icon in this process) by HWND and ID.
-        // Then send its normal right-click callback. This neither builds a menu nor uses a test hook in the app.
-        bool opened = false;
+        AutomationElement result = null;
         EnumWindows(delegate(IntPtr window, IntPtr ignored)
         {
-            int owner;
-            GetWindowThreadProcessId(window, out owner);
-            if (owner != pid) { return true; }
-            var icon = new NotifyIconIdentifier { Size = (uint)Marshal.SizeOf(typeof(NotifyIconIdentifier)), Window = window, Id = 1 };
-            Rect rect;
-            if (Shell_NotifyIconGetRect(ref icon, out rect) < 0 || rect.Right <= rect.Left) { return true; }
-            SetCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
-            opened = PostMessage(window, 0x0800, new IntPtr(1), new IntPtr(0x0205)); // WM_TRAYMOUSEMESSAGE, WM_RBUTTONUP
-            return false;
-        }, IntPtr.Zero);
-        return opened;
-    }
-
-    static Action MenuItem(IntPtr window, string label)
-    {
-        var row = Named(AutomationElement.FromHandle(window), label);
-        if (row != null && !row.Current.IsOffscreen) { return () => ClickElement(row, false); }
-
-        // .NET Framework ToolStrip can expose its children through MSAA instead of UI Automation.
-        Guid iid = typeof(IAccessible).GUID;
-        IAccessible popup;
-        if (AccessibleObjectFromWindow(window, unchecked((uint)-4), ref iid, out popup) < 0 || popup == null) { return null; }
-        int count = popup.accChildCount;
-        for (int id = 1; id <= count; id++)
-        {
+            if (!IsWindowVisible(window)) { return true; }
+            if (pid != 0)
+            {
+                int owner;
+                GetWindowThreadProcessId(window, out owner);
+                if (owner != pid) { return true; }
+            }
+            else
+            {
+                var name = new StringBuilder(128);
+                GetClassName(window, name, name.Capacity);
+                switch (name.ToString())
+                {
+                    case "Shell_TrayWnd":
+                    case "Shell_SecondaryTrayWnd":
+                    case "TopLevelWindowForOverflowXamlIsland":
+                    case "NotifyIconOverflowWindow":
+                        break;
+                    default: return true;
+                }
+            }
             try
             {
-                int childId = id;
-                if (popup.get_accName(childId) == label) { return () => popup.accDoDefaultAction(childId); }
-                var child = popup.get_accChild(childId) as IAccessible;
-                if (child != null && child.get_accName(0) == label) { return () => child.accDoDefaultAction(0); }
+                AutomationElement root = AutomationElement.FromHandle(window);
+                if (root == null) { return true; }
+                foreach (AutomationElement element in root.FindAll(TreeScope.Subtree,
+                    new PropertyCondition(AutomationElement.IsOffscreenProperty, false)))
+                {
+                    string name = element.Current.Name;
+                    bool matches = exact ? name == text : name.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (matches && !element.Current.BoundingRectangle.IsEmpty)
+                    {
+                        result = element;
+                        return false;
+                    }
+                }
             }
-            catch (COMException) { } // Separators and other unnamed children can reject name queries.
+            catch (ElementNotAvailableException) { }
+            catch (COMException) { }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
+    static AutomationElement WaitForUI(int pid, string text, bool exact = false)
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            AutomationElement element = FindUI(pid, text, exact);
+            if (element != null) { return element; }
+            Thread.Sleep(200);
         }
-        return null;
+        throw new InvalidOperationException("The tray did not show '" + text + "'.");
+    }
+
+    static void PointAt(AutomationElement element, uint down)
+    {
+        var rect = element.Current.BoundingRectangle;
+        if (!SetCursorPos((int)(rect.Left + rect.Width / 2), (int)(rect.Top + rect.Height / 2)))
+        {
+            throw new InvalidOperationException("Cannot move the pointer to the tray item.");
+        }
+        mouse_event(down, 0, 0, 0, UIntPtr.Zero);
+        mouse_event(down * 2, 0, 0, 0, UIntPtr.Zero);
     }
 
     static void RunnerTray(int pid, string label, string path)
     {
-        var icon = VisibleIcon();
-        if (icon != null) { ClickElement(icon, true); }
-        else if (!OpenRegisteredTrayMenu(pid))
+        // Open the installed app's real notification icon, including when Explorer hides it in overflow.
+        var icon = FindUI(0, "Pi Pocket", false);
+        if (icon == null)
         {
-            FocusNotificationArea();
-            ClickElement(WaitForNamed(VisibleIcon, "Pi Pocket tray icon"), true);
+            PointAt(WaitForUI(0, "Show hidden icons"), 2);
+            icon = WaitForUI(0, "Pi Pocket");
         }
-
-        Stopwatch wait = Stopwatch.StartNew();
-        while (wait.Elapsed.TotalSeconds < 15)
-        {
-            Action select = null;
-            IntPtr menu = IntPtr.Zero;
-            EnumWindows(delegate(IntPtr window, IntPtr ignored)
-            {
-                int owner;
-                Rect rect;
-                GetWindowThreadProcessId(window, out owner);
-                if (owner != pid || !IsWindowVisible(window) || !GetWindowRect(window, out rect) ||
-                    rect.Right - rect.Left > 450 || rect.Bottom - rect.Top > 450) { return true; }
-                try { select = MenuItem(window, label); }
-                catch (ElementNotAvailableException) { }
-                catch (COMException) { }
-                if (select == null) { return true; }
-                menu = window;
-                return false;
-            }, IntPtr.Zero);
-            if (select != null)
-            {
-                Screenshot(menu, path);
-                // Activate the exact native row that appears in the screenshot.
-                select();
-                return;
-            }
-            Thread.Sleep(200);
-        }
-        throw new InvalidOperationException("Could not see '" + label + "' in the installed app's tray menu.");
+        PointAt(icon, 8);
+        WaitForUI(pid, "Open Pi Pocket", exact: true);
+        var row = WaitForUI(pid, label, exact: true);
+        Capture(SystemInformation.VirtualScreen, path);
+        PointAt(row, 2);
+        Thread.Sleep(250);
     }
 
     static void WaitForFocusedField(IntPtr window, string expected)

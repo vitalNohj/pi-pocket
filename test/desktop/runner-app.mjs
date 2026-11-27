@@ -234,6 +234,10 @@ try {
     await shot("server-connected", serverWindow);
     console.log("The server listed the same computer in Access → By computer while it was online.");
 
+    if (windows) {
+        await input("close-to-tray", serverWindow); // Do not confuse the window's taskbar button with the tray icon.
+    }
+
     await shot("runner-menu");
     await expect("Working now"); // Selecting the native row opened Runner, not the last Settings section.
     console.log("The native menu showed Working now and its Runner row opened the card.");
