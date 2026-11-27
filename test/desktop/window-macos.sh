@@ -109,10 +109,11 @@ for chrome in system seamless; do
         [ ! -e "$HOME/Downloads/window-dialog.txt" ]
     fi
 
-    drive click 344 "$((212 + offset))"
+    # WindowServer's Save sheet can disappear before WebKit receives input again.
+    bounded 12 "$driver" "$pid" click-verified 344 "$((212 + offset))" 'Dark theme'
     sleep 2
     shot "$chrome-dark"
-    drive click 480 "$((212 + offset))"
+    bounded 12 "$driver" "$pid" click-verified 480 "$((212 + offset))" 'Extra window'
     wait_for 'open a second window' 20 has_windows 2
     sleep 2
     shot "$chrome-two-windows"
