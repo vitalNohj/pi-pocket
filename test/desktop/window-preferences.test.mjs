@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -169,6 +169,31 @@ test("invalid window edits never save and a shortcut collision leaves the existi
     assert.equal(registered, "Ctrl+Alt+S");
     await app.patch({ window: { shortcutEnabled: false } });
     assert.equal(registered, null);
+});
+
+test("auto-save retries a sharing error without changing the old settings first", async (t) => {
+    const folder = await profile(t);
+    const app = await open(t, { folder });
+    const file = join(folder, "desktop.json");
+    const rename = fs.rename;
+    let attempts = 0;
+
+    t.mock.method(fs, "rename", async (source, target) => {
+        assert.equal(target, file);
+        if (++attempts === 1) {
+            assert.equal(
+                JSON.parse(await readFile(file, "utf8")).preferences.appearance.opacity,
+                82,
+            );
+            throw Object.assign(new Error("The file is open"), { code: "EBUSY" });
+        }
+
+        await rename(source, target);
+    });
+
+    await app.patch({ appearance: { opacity: 28 } });
+    assert.equal(attempts, 2);
+    assert.equal(JSON.parse(await readFile(file, "utf8")).preferences.appearance.opacity, 28);
 });
 
 test("launch at login reflects native registration instead of a saved preference", async (t) => {

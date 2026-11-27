@@ -116,8 +116,13 @@ function Open-Settings($app, $window) {
 }
 
 function Saved($section, $name, $value) {
-    $saved = Get-Content -Raw $preferences | ConvertFrom-Json
-    return $saved.preferences.$section.$name -eq $value
+    # Do not hold the file against atomic replacement while polling it.
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $reader = [IO.StreamReader]::new([IO.File]::Open($preferences, 'Open', 'Read', $share))
+    try {
+        $saved = $reader.ReadToEnd() | ConvertFrom-Json
+        return $saved.preferences.$section.$name -eq $value
+    } finally { $reader.Dispose() }
 }
 
 function Settings-Select($handle, $y, $keys) {

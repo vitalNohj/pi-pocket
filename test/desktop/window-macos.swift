@@ -4,6 +4,10 @@ import Cocoa
 
 let args = CommandLine.arguments
 let pid = pid_t(args[1])!
+if args[2] == "hide-finder" {
+    NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first?.hide()
+    exit(0)
+}
 if args[2] == "wallpaper" {
     let image = URL(fileURLWithPath: args[3])
     do {

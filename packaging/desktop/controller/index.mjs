@@ -535,7 +535,8 @@ export class DesktopController {
 
             try {
                 await savePreferences(this.#file, next);
-            } catch {
+            } catch (error) {
+                this.#log("preferences.save", error.code || "error");
                 await rollback?.().catch(() => {});
 
                 throw connectionError("save", "Desktop settings could not be saved.");

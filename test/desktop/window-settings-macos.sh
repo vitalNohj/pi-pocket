@@ -22,6 +22,8 @@ quit_fixture_app() {
 bounded 10 node "$here/window-evidence.mjs" wallpaper "$bmp"
 sips -s format png "$bmp" --out "$wallpaper" >/dev/null
 bounded 10 "$driver" 0 wallpaper "$wallpaper"
+# The download test reveals its file in Finder. Get it out of the wallpaper captures.
+bounded 10 "$driver" 0 hide-finder
 # Leave margins around the session window so the wallpaper is visible in the same capture.
 defaults write io.github.tannermidd.pi-pocket.launcher 'NSWindow Frame Pi Pocket' '68 52 840 600 0 0 1024 768 '
 

@@ -18,7 +18,17 @@ if (command === "theme" && ["dark", "light"].includes(mode)) {
             marker,
             `${marker}
         localStorage.removeItem("pocket.themeCache");
-        localStorage.setItem("pocket.appearance", ${JSON.stringify(JSON.stringify(appearance))});`,
+        localStorage.setItem("pocket.appearance", ${JSON.stringify(JSON.stringify(appearance))});
+        // Use the real Not now action on this disposable owner's setup prompt.
+        const welcome = new MutationObserver(() => {
+            const actions = document.querySelectorAll('[data-sheet="owner-setup"] button');
+            const later = Array.from(actions).find((button) => button.textContent.trim() === "Not now");
+            if (later && !later.disabled) {
+                welcome.disconnect();
+                later.click();
+            }
+        });
+        welcome.observe(document.documentElement, { childList: true, subtree: true });`,
         ),
     );
 } else if (command === "wallpaper") {
