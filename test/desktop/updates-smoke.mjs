@@ -35,6 +35,7 @@ const startup = win
     ? join(process.env.APPDATA, "Microsoft/Windows/Start Menu/Programs/Startup/Pi Pocket.lnk")
     : join(home, "Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist");
 const log = win ? join(install, "launcher.log") : join(home, "Library/Logs/Pi Pocket/launcher.log");
+const settings = join(install, "desktop/desktop.json");
 const data = join(home, ".pi-pocket");
 const running = join(data, "launcher-running.json");
 const config = join(data, "config.json");
@@ -120,7 +121,7 @@ function appPid() {
         const result = powershell(
             `
             $app = Get-Process -Name 'Pi Pocket' -ErrorAction SilentlyContinue |
-                Where-Object { $_.Path -eq $env:PP_APP -and $_.MainWindowHandle -ne 0 } |
+                Where-Object { $_.Path -eq $env:PP_APP -and $_.MainWindowTitle -eq 'Pi Pocket' } |
                 Select-Object -First 1
             if ($app) { $app.Id }
         `,
@@ -179,10 +180,22 @@ function screenshot(name, pid) {
     }
 }
 
-async function attachedApp(version, previous) {
+async function macSignIns() {
+    const contents = await readFile(log, "utf8").catch(() => "");
+
+    return contents.split("The window is signed in.").length - 1;
+}
+
+async function launchAttachedApp(version, previous) {
+    const signedIn = win ? 0 : await macSignIns();
+
+    launchApp();
     const pid = await waitFor(`a running desktop app at ${version}`, async () => {
-        const started = (await readFile(log, "utf8")).includes(`Pi Pocket desktop app ${version}`);
-        const pid = started && appPid();
+        if (!win && (await macSignIns()) <= signedIn) {
+            return false;
+        }
+
+        const pid = appPid();
 
         return pid !== previous && pid;
     });
@@ -197,6 +210,16 @@ await mkdir(proof, { recursive: true });
 assert.equal(appVersion(), current);
 assert.equal((await json(manifest)).version, current);
 assert.ok((await stat(startup)).isFile());
+
+// A fresh install opens Home. Give N a saved local choice and a non-default Window setting.
+await mkdir(dirname(settings), { recursive: true });
+await writeFile(
+    settings,
+    JSON.stringify({
+        schemaVersion: 1,
+        preferences: { home: { mode: "local" }, window: { closeToTray: false } },
+    }),
+);
 
 // Start a real Pi Pocket console launcher separately. The desktop app must leave it alone.
 const env = {
@@ -243,13 +266,14 @@ try {
         async () => (await json(running)).pid === server.pid && (await serverInfo()),
     );
     await writeFile(savedData, "saved before desktop-only update\n");
-    const kept = [runtime, manifest, runtimeFloor, startup, savedData];
+    const oldPid = await launchAttachedApp(current);
+
+    // Wait for the installed controller to save its normal settings format before comparing bytes.
+    assert.equal((await json(settings)).preferences.window.closeToTray, false);
+    const kept = [runtime, manifest, runtimeFloor, startup, settings, savedData];
     const before = await Promise.all(kept.map(hash));
     const configBefore = await savedConfig();
     const originalServerInfo = await serverInfo();
-
-    launchApp();
-    const oldPid = await attachedApp(current);
 
     screenshot("before", oldPid);
 
@@ -296,9 +320,7 @@ try {
         join(cache, "applying.json"),
         JSON.stringify({ pid: oldPid, started: Date.now() }),
     );
-    launchApp();
-
-    const newPid = await attachedApp(next, oldPid);
+    const newPid = await launchAttachedApp(next, oldPid);
 
     assert.deepEqual(await json(join(cache, "last-result.json")), {
         phase: "applied",
@@ -313,7 +335,7 @@ try {
     screenshot("after", newPid);
     const summary =
         `Desktop: ${current} (PID ${oldPid}) → ${next} (PID ${newPid}).\n` +
-        `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting and data did not change. Server settings stayed the same apart from presence timestamps.\n`;
+        `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting, desktop settings and data did not change. Server settings stayed the same apart from presence timestamps.\n`;
 
     await writeFile(join(proof, "result.txt"), summary);
     console.log(summary);
