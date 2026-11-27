@@ -1,4 +1,5 @@
 // This interactive runner driver is not part of the shipped app.
+import ApplicationServices
 import Cocoa
 import CoreGraphics
 
@@ -54,6 +55,30 @@ func prepareInput() {
     }
 }
 
+func waitForFocusedField(_ expected: String) {
+    guard AXIsProcessTrusted() else { fail("macOS has not authorized accessibility read-back for the installer input driver.") }
+    let app = AXUIElementCreateApplication(pid)
+
+    func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    // Poll observations only. Do not post more input or change the field.
+    let start = ProcessInfo.processInfo.systemUptime
+    while ProcessInfo.processInfo.systemUptime - start < 5 {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+            let focus = attribute(app, kAXFocusedUIElementAttribute), CFGetTypeID(focus) == AXUIElementGetTypeID() {
+            let field = focus as! AXUIElement
+            if attribute(field, kAXRoleAttribute) as? String == kAXTextFieldRole,
+                attribute(field, kAXValueAttribute) as? String == expected { return }
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    fail("The focused Server address field did not contain the fixture address.")
+}
+
 func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
@@ -90,6 +115,9 @@ case "click":
 case "type":
     prepareInput()
     for character in args[4] { key(0, text: String(character)) }
+case "expect-field":
+    prepareInput()
+    waitForFocusedField(args[4])
 case "close":
     prepareInput()
     key(13, flags: .maskCommand) // Cmd+W

@@ -26,6 +26,7 @@ async function start() {
             timeout: 15_000,
         });
         const pid = Number(stdout.trim());
+
         assert(
             Number.isSafeInteger(pid) && pid > 0,
             "the desktop launched as a Windows application",
@@ -47,11 +48,13 @@ async function start() {
 function exited(pid) {
     try {
         process.kill(pid, 0);
+
         return false;
     } catch (error) {
         if (error.code !== "ESRCH") {
             throw error;
         }
+
         return true;
     }
 }
@@ -79,9 +82,11 @@ async function gui(command, title, ...args) {
         return await exec(input, parameters, { timeout: 30_000, windowsHide: true });
     } catch (error) {
         console.error(`Desktop input ${command} failed (app exited: ${exited(app)}).`);
+
         if (error.stderr) {
             console.error(error.stderr.trim());
         }
+
         throw error;
     }
 }
@@ -108,6 +113,7 @@ async function waitForSettings(opened) {
     } else {
         await sleep(2500);
     }
+
     await gui("find", settingsTitle);
 }
 
@@ -158,15 +164,30 @@ try {
     await gui("click", settingsTitle, 95, 104); // Home section
     await gui("click", settingsTitle, 420, 193); // Another server
     await shot(settingsTitle, "home-another-server");
-    await gui("click", settingsTitle, 390, 384); // Server address
-    await gui("type", settingsTitle, remote.address);
-    await gui("click", settingsTitle, 280, 442); // Check
-    await until("Check used the base-path identity endpoint", () =>
-        remote.requests.some(({ path }) => path === "/pocket/api/pocket/info"),
-    );
+    // WebKit uses a shorter native select control above these two buttons.
+    const remoteButtonCenter = windows ? 442 : 430;
+
+    try {
+        await gui("click", settingsTitle, 390, 384); // Server address
+        await gui("type", settingsTitle, remote.address);
+        console.log("Home: Typed the fixture server address.");
+        await gui("expect-field", settingsTitle, remote.address);
+        console.log("Home: Read the exact fixture address from the focused field.");
+        await gui("click", settingsTitle, 280, remoteButtonCenter); // Check
+        console.log("Home: Clicked Check.");
+        await until("Check used the base-path identity endpoint", () =>
+            remote.requests.some(({ path }) => path === "/pocket/api/pocket/info"),
+        );
+        console.log("Home: The fixture received /pocket/api/pocket/info.");
+    } catch (error) {
+        await shot(settingsTitle, "home-check-failed").catch(() => {});
+
+        throw error;
+    }
+
     assert.equal((await prefs()).home.mode, null);
     assert(!remote.requests.some(({ path }) => path === "/pocket"));
-    await gui("click", settingsTitle, 350, 442); // Connect
+    await gui("click", settingsTitle, 350, remoteButtonCenter); // Connect
     await until(
         "Another server connection saved",
         async () => (await prefs()).home.remoteAddress === remote.address,
@@ -195,6 +216,7 @@ try {
     }
 
     await remote.close();
+
     if (windows) {
         console.log(await webViewLog());
     }
