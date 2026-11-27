@@ -31,7 +31,7 @@ if (command === "theme" && ["dark", "light"].includes(mode)) {
     bmp.writeUInt32LE(54, 10);
     bmp.writeUInt32LE(40, 14);
     bmp.writeInt32LE(width, 18);
-    bmp.writeInt32LE(-height, 22);
+    bmp.writeInt32LE(height, 22);
     bmp.writeUInt16LE(1, 26);
     bmp.writeUInt16LE(24, 28);
     const colors = [
@@ -43,7 +43,7 @@ if (command === "theme" && ["dark", "light"].includes(mode)) {
         [33, 191, 154],
     ];
 
-    for (let y = 0, i = 54; y < height; y++) {
+    for (let y = height - 1, i = 54; y >= 0; y--) {
         for (let x = 0; x < width; x++, i += 3) {
             const wave = x + 260 * Math.sin(y / 240) - y * 0.4;
             const stripe = Math.floor(wave / 330) % colors.length;

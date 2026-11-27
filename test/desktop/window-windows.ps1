@@ -15,6 +15,7 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr w);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr w);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr w, out Rect r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr w, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr w, ref Point p);
@@ -170,7 +171,12 @@ try {
                 (Get-Content -Raw $existing).Trim() -ne 'Keep the existing file') { throw 'The saved file or the existing file is wrong' }
             Start-Sleep -Seconds 2 # Let Explorer reveal the saved file before the capture.
             Screenshot 'download'
-            [void][NativeWindowFixture]::SetForegroundWindow($window)
+            # Explorer takes foreground when it reveals the file. A click in the exposed sidebar
+            # restores real user focus even when Windows declines SetForegroundWindow.
+            if ([NativeWindowFixture]::GetForegroundWindow() -ne $window) {
+                [NativeWindowFixture]::Click($window, 20, 72)
+                Wait-For 'return focus from Explorer to Pi Pocket' { [NativeWindowFixture]::GetForegroundWindow() -eq $window }
+            }
             [NativeWindowFixture]::Click($window, 752, 212)
             Wait-For 'open the Save dialog' { [NativeWindowFixture]::Windows($app.Id).Length -ge 2 }
             Screenshot 'save-dialog'

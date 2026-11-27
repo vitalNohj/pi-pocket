@@ -9,6 +9,8 @@ try {
     node "$PSScriptRoot/window-evidence.mjs" wallpaper $wallpaper
     if ($LASTEXITCODE -ne 0 -or -not [NativeWindowFixture]::SystemParametersInfo(20, 0, $wallpaper, 3)) { throw 'Could not set runner wallpaper' }
     Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name EnableTransparency -Value 1
+    # Keep the runner console and Explorer behind the wallpaper captures.
+    (New-Object -ComObject Shell.Application).MinimizeAll()
     foreach ($mode in @('light', 'dark')) {
         node "$PSScriptRoot/window-evidence.mjs" theme $index $mode
         if ($LASTEXITCODE -ne 0) { throw 'Could not select the screenshot theme' }
@@ -103,6 +105,10 @@ try {
     Wait-For 'quit on close with Close to tray off' { $app.Refresh(); $app.HasExited }
     'Changes made through installed Settings survived Quit. Windows Startup, both title bars, the global shortcut, and Acrylic/Mica applied in the installed app.' |
         Set-Content (Join-Path $out 'settings-assertions.txt')
+} catch {
+    Screenshot 'settings-failure'
+    if (Test-Path $log) { Select-String -Pattern 'Desktop Settings|shortcut|/api/me' $log | Out-Host }
+    throw
 } finally {
     if ($app -and -not $app.HasExited) {
         try { Request-Quit; [void]$app.WaitForExit(15000) } catch { Write-Warning $_.Exception.Message }

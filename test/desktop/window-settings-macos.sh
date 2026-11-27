@@ -48,15 +48,16 @@ for mode in light dark; do
         [ "$(plutil -extract ProgramArguments.5 raw "$AGENT")" = --login ]
         settings_click 266 267
         wait_for 'save Start hidden' 10 saved window startHidden true
-        settings_select 369 125 # System
+        # WKWebView uses shorter Aqua selects than WebView2.
+        settings_select 360 125 # System
         wait_for 'save System title bar' 10 saved window titleBar system
-        settings_select 369 126 # Seamless
+        settings_select 360 126 # Seamless
         wait_for 'save Seamless title bar' 10 saved window titleBar seamless
-        settings_select 446 125 # Browser
+        settings_select 424 125 # Browser
         wait_for 'save browser link routing' 10 saved window links browser
-        settings_select 446 126 # App
+        settings_select 424 126 # App
         wait_for 'save app link routing' 10 saved window links app
-        settings_click 266 487
+        settings_click 266 458
         wait_for 'register the global shortcut' 10 saved window shortcutEnabled true
         shot desktop-settings-window
 
@@ -69,9 +70,9 @@ for mode in light dark; do
         drive key 28
         drive key 48
         wait_for 'save opacity' 10 saved appearance opacity 28
-        settings_select 398 125 # Sidebar
+        settings_select 390 125 # Sidebar
         wait_for 'save Sidebar material' 10 saved appearance material sidebar
-        settings_select 398 126 # Window
+        settings_select 390 126 # Window
         wait_for 'save Window material' 10 saved appearance material window
         shot desktop-settings-appearance
         drive escape
