@@ -79,14 +79,10 @@ func waitForFocusedField(_ expected: String) {
     fail("The focused Server address field did not contain the fixture address.")
 }
 
-func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
+func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
         event.flags = flags
-        if let text = text {
-            let units = Array(text.utf16)
-            units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
-        }
         event.post(tap: .cghidEventTap)
     }
 }
@@ -129,7 +125,11 @@ case "click":
     click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
 case "type":
     prepareInput()
-    for character in args[4] { key(0, text: String(character)) }
+    // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    guard pasteboard.setString(args[4], forType: .string) else { fail("Cannot copy the test address.") }
+    key(9, flags: .maskCommand) // Cmd+V
 case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])
