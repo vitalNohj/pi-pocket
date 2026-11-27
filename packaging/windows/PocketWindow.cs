@@ -287,6 +287,7 @@ namespace PiPocket
 
         protected override void WndProc(ref Message message)
         {
+            if (message.Msg == DictationFixtureMenuMessage && ShowDictationFixtureMenu()) { return; }
             // Alt alone reveals the native menu. Alt+Space goes to the OS system menu.
             if (message.Msg == 0x0112 && (message.WParam.ToInt64() & 0xfff0) == 0xf100 && message.LParam == IntPtr.Zero && !fullScreen)
             {

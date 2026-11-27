@@ -46,10 +46,8 @@ namespace PiPocket
         {
             PocketWindow page = front();
             if (page == null || !page.HasDictation || page.Handle != GetForegroundWindow()) { Reset(); return; }
-            int key = Marshal.ReadInt32(data);
-            // The installer test opens the real tray menu without depending on Explorer overflow coordinates.
-            if (message == 0x100 && key == 0x79 && Pressed(0x11) && Pressed(0x10) && page.ShowDictationFixtureMenu()) { return; }
             if ((Marshal.ReadInt32(data, 8) & 0x10) != 0) { return; } // Ignore injected input.
+            int key = Marshal.ReadInt32(data);
             var prefs = preference();
             int binding = prefs[0] == "F8" ? 0x77 : prefs[0] == "F9" ? 0x78 :
                 prefs[0] == "primary-shift-d" ? 0x44 : prefs[0] == "default" ? 0xA3 : 0;

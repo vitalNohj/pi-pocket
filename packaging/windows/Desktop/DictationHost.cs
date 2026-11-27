@@ -94,7 +94,10 @@ namespace PiPocket
             return null;
         }
 
-        internal void ShowDictationFixtureMenu() { trayMenu.Show(Cursor.Position); }
+        internal void ShowDictationFixtureMenu(PocketWindow owner)
+        {
+            trayMenu.Show(owner, owner.PointToClient(Cursor.Position));
+        }
 
         void StopDictation()
         {
@@ -296,10 +299,13 @@ namespace PiPocket
             return bridge.SendDictation(op, scope, id, parts, message);
         }
 
-        internal bool ShowDictationFixtureMenu()
+        const int DictationFixtureMenuMessage = 0x8031; // WM_APP + 49, used by the installer driver.
+
+        bool ShowDictationFixtureMenu()
         {
-            if (!DictationFocus || host.DictationFixture(origin) == null) { return false; }
-            BeginInvoke((MethodInvoker)host.ShowDictationFixtureMenu);
+            // Only a focused loopback view with the isolated PCM fixture can open this menu by message.
+            if (host == null || !HasDictation || !DictationFocus || host.DictationFixture(origin) == null) { return false; }
+            BeginInvoke((MethodInvoker)delegate { host.ShowDictationFixtureMenu(this); });
             return true;
         }
 
