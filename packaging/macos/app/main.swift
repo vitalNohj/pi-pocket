@@ -420,16 +420,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         frontView?.reload()
     }
 
+    private func zoomPage(_ change: (CGFloat) -> CGFloat) {
+        guard let view = frontView else { return }
+        view.pageZoom = change(view.pageZoom)
+        // The native buttons keep their size in points, so their reservation in CSS pixels changes.
+        (view.window as? PocketNativeWindow)?.chrome?.needsLayout = true
+    }
+
     @objc func actualSize() {
-        frontView?.pageZoom = 1
+        zoomPage { _ in 1 }
     }
 
     @objc func zoomIn() {
-        frontView?.pageZoom = min(3, (frontView?.pageZoom ?? 1) + 0.1)
+        zoomPage { min(3, $0 + 0.1) }
     }
 
     @objc func zoomOut() {
-        frontView?.pageZoom = max(0.5, (frontView?.pageZoom ?? 1) - 0.1)
+        zoomPage { max(0.5, $0 - 0.1) }
     }
 
     func openWindow() {

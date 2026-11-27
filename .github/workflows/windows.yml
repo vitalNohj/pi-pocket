@@ -403,12 +403,16 @@ jobs:
                   if (-not $app.WaitForExit(30000)) { throw 'The app did not quit' }
                   if ($nodes.Count -gt 0) { throw "The app started the older package" }
                   $run = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
-                      "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=$(Join-Path $env:RUNNER_TEMP 'setup-again.log')"
+                      "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=startup", "/LOG=$(Join-Path $env:RUNNER_TEMP 'setup-again.log')"
                   )
                   if ($run.ExitCode -ne 0) { throw "Setup exited with $($run.ExitCode)" }
                   $installed = (Get-Content -Raw $env:MANIFEST | ConvertFrom-Json).version
                   if ($installed -ne $env:VERSION) { throw "Setup left pi-pocket $installed, not $env:VERSION" }
                   Write-Host "Setup put pi-pocket $installed back"
+                  $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Pi Pocket.lnk'
+                  if (-not (Test-Path $startup)) { throw 'Setup ignored the startup task on repair' }
+                  $link = (New-Object -ComObject WScript.Shell).CreateShortcut($startup)
+                  if ($link.Arguments -ne '--login') { throw 'The shortcut does not use --login' }
 
             - name: Setup keeps a newer package that the app updated to
               run: |
@@ -426,6 +430,18 @@ jobs:
                       throw "Setup's log does not say that the newer package stays"
                   }
                   [IO.File]::WriteAllText($env:MANIFEST, $text)
+                  $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Pi Pocket.lnk'
+                  if (-not (Test-Path $startup)) { throw 'Setup did not retain the Windows startup registration' }
+
+            - name: Setup can turn off launch at sign-in during an upgrade
+              run: |
+                  $log = Join-Path $env:RUNNER_TEMP 'setup-no-startup.log'
+                  $run = Start-Process -FilePath $env:SETUP -Wait -PassThru -ArgumentList @(
+                      '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/MERGETASKS=!startup', "/LOG=$log"
+                  )
+                  if ($run.ExitCode -ne 0) { throw "Setup exited with $($run.ExitCode)" }
+                  $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Pi Pocket.lnk'
+                  if (Test-Path $startup) { throw 'Setup kept the shortcut with the startup task off' }
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()

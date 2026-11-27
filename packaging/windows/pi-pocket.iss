@@ -48,6 +48,8 @@ Uninstallable=no
 CreateUninstallRegKey=no
 #else
 OutputBaseFilename=Pi-Pocket-Setup-{#AppVersion}
+; Startup may have changed in the app or Windows since Setup last ran.
+UsePreviousTasks=no
 #endif
 SetupIconFile=pi-pocket.ico
 UninstallDisplayIcon={app}\Pi Pocket.exe
@@ -68,6 +70,7 @@ SignedUninstaller=yes
 Name: startup; Description: "Start Pi Pocket when I sign in to Windows"; Flags: unchecked
 
 [InstallDelete]
+Type: files; Name: "{autostartup}\Pi Pocket.lnk"; Tasks: not startup
 ; An older Node.js must not leave files behind in the new one.
 Type: filesandordirs; Name: "{app}\node"
 ; The package goes in whole, unless a newer one that the app updated to stays. An install that stops after this leaves
@@ -96,9 +99,11 @@ Source: "stop-pi-pocket.ps1"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; WorkingDir: "{%USERPROFILE}"; Comment: "Open Pi Pocket"; AppUserModelID: "PiPocket.Desktop"; AppUserModelToastActivatorCLSID: "3482E279-4BAB-4932-BF9D-CE95126FE324"
 Name: "{autoprograms}\Pi Pocket (console)"; Filename: "{app}\pi-pocket.cmd"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\pi-pocket.ico"; Comment: "Start Pi Pocket in a console window, to choose how other devices reach it"
-Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Tasks: startup; Check: NewDesktopInstall
+Name: "{autostartup}\Pi Pocket"; Filename: "{app}\Pi Pocket.exe"; Parameters: "--login"; WorkingDir: "{%USERPROFILE}"; Tasks: startup
 
 [Registry]
+; Selecting startup also enables a shortcut that Windows previously disabled.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder"; ValueType: none; ValueName: "Pi Pocket.lnk"; Flags: deletevalue; Tasks: startup
 ; Shell activation and the URL association both belong to this user, not to an administrator's machine.
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}\LocalServer32"; ValueType: string; ValueData: """{app}\Pi Pocket.exe"" --toast-server"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\CLSID\{{3482E279-4BAB-4932-BF9D-CE95126FE324}"; Flags: uninsdeletekeyifempty
@@ -371,9 +376,32 @@ begin
   StopPiPocket;
 end;
 
-function NewDesktopInstall: Boolean;
+function StartupEnabled: Boolean;
+var
+  State: AnsiString;
 begin
-  Result := not UpgradingDesktop;
+  Result := FileExists(ExpandConstant('{autostartup}\Pi Pocket.lnk'));
+  if not Result then
+    exit;
+  if RegQueryBinaryValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder',
+    'Pi Pocket.lnk', State) and (Length(State) > 0) then
+    Result := (Ord(State[1]) and 1) = 0;
+end;
+
+procedure InitializeWizard;
+var
+  I: Integer;
+  Arg: String;
+begin
+  { Leave explicitly supplied task choices alone. Otherwise take the default from Windows. }
+  for I := 1 to ParamCount do
+  begin
+    Arg := Uppercase(ParamStr(I));
+    if (Pos('/TASKS=', Arg) = 1) or (Pos('/MERGETASKS=', Arg) = 1) or (Pos('/LOADINF=', Arg) = 1) then
+      exit;
+  end;
+  if FileExists(AddBackslash(WizardDirValue) + 'Pi Pocket.exe') and StartupEnabled then
+    WizardSelectTasks('startup');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -395,7 +423,7 @@ begin
   end;
 
   UpgradingDesktop := FileExists(ExpandConstant('{app}\Pi Pocket.exe'));
-  LegacyStartup := UpgradingDesktop and FileExists(ExpandConstant('{autostartup}\Pi Pocket.lnk'));
+  LegacyStartup := UpgradingDesktop and StartupEnabled;
   if UpgradingDesktop and not FileExists(ExpandConstant('{app}\desktop-assets\settings\index.html')) then
     SaveStringToFile(ExpandConstant('{app}\desktop-upgrade.txt'), 'Previous desktop install.', False);
 

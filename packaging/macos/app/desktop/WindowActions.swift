@@ -22,10 +22,12 @@ extension AppDelegate {
 
     func installWindowScript(in controller: WKUserContentController, origin: String, initial: String) {
         guard let url = Bundle.main.url(forResource: "window-host", withExtension: "js"),
-            let source = try? String(contentsOf: url, encoding: .utf8)
+            let source = try? String(contentsOf: url, encoding: .utf8),
+            let data = try? JSONSerialization.data(withJSONObject: [origin, windowKey]),
+            let arguments = String(data: data, encoding: .utf8)
         else { return }
         let bootstrap = source.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ";")))
-        let script = "\(bootstrap)(\(jsString(origin)), \(jsString(windowKey)), \(initial), (message) => window.webkit.messageHandlers.pocketWindow.postMessage(message));"
+        let script = "\(bootstrap)(...\(arguments), \(initial), (message) => window.webkit.messageHandlers.pocketWindow.postMessage(message));"
         controller.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.add(self, name: "pocketWindow")
     }
