@@ -932,12 +932,14 @@
     function applyTheme(theme) {
         const root = document.documentElement;
         const site = forcedColors.matches ? null : theme;
+
         root.dataset.theme = (site?.dark ?? systemDark.matches) ? "dark" : "light";
     }
 
     for (const query of [systemDark, forcedColors]) {
         query.addEventListener("change", () => applyTheme(state?.window.theme));
     }
+
     applyTheme(null);
 
     function refreshControls(panel, group) {
@@ -962,12 +964,32 @@
             .replace("Alt", state.platform === "macos" ? "Option" : "Alt");
     }
 
+    function recordedShortcutKey(event) {
+        if (state.platform === "macos") {
+            const physical = event.code.match(/^(?:Key([A-Z])|Digit(\d))$/);
+
+            return physical?.[1] ?? physical?.[2];
+        }
+
+        if (/^[a-zA-Z]$/.test(event.key)) {
+            return event.key.toUpperCase();
+        }
+
+        // WebView2 gives the Windows virtual key for the number row, even when key is punctuation.
+        // Do not use the physical position or turn a number pad digit into a number row binding.
+        const { keyCode } = event;
+
+        return keyCode >= 0x30 && keyCode <= 0x39 ? String.fromCharCode(keyCode) : undefined;
+    }
+
     function windowOptions() {
         let settingLogin = false;
         let recording = false;
         const login = element("input", "", { type: "checkbox", name: "launchAtLogin" });
         const launch = element("label", "", { className: "check" });
+
         launch.append(login, "Launch at login");
+
         login.onchange = async () => {
             settingLogin = true;
             refresh();
@@ -987,10 +1009,12 @@
             recording = !recording;
             refresh();
         });
+
         shortcutButton.onblur = () => {
             recording = false;
             refresh();
         };
+
         shortcutButton.onkeydown = (event) => {
             if (!recording || event.key === "Tab") {
                 return;
@@ -1002,10 +1026,11 @@
             if (event.key === "Escape") {
                 recording = false;
                 refresh();
+
                 return;
             }
 
-            const key = event.code.match(/^(?:Key([A-Z])|Digit(\d))$/);
+            const key = recordedShortcutKey(event);
 
             if (!key || event.repeat || !(event.ctrlKey || event.altKey || event.metaKey)) {
                 return;
@@ -1021,15 +1046,17 @@
                     event.altKey && "Alt",
                     event.metaKey && "Meta",
                     event.shiftKey && "Shift",
-                    key[1] ?? key[2],
+                    key,
                 ]
                     .filter(Boolean)
                     .join("+"),
             );
         };
+
         const defaultKey = state.platform === "macos" ? "Meta+Shift+P" : "Ctrl+Shift+P";
         const shortcutStatus = element("p", "", { className: "hint", role: "status" });
         const shortcutButtons = element("div", "", { className: "actions" });
+
         shortcutButtons.append(
             shortcutButton,
             action("Use default", () => patch("window", "shortcut", defaultKey)),
@@ -1063,12 +1090,16 @@
             shortcutStatus,
             advanced(checkbox("Enable developer tools", "window", "developerTools")),
         );
+
         content.append(settings);
+
         refresh = () => {
             refreshControls(settings, "window");
+
             if (!settingLogin) {
                 login.checked = state.window.loginEnabled === true;
             }
+
             login.disabled = settingLogin || state.window.loginEnabled === null;
             shortcutButton.textContent = recording
                 ? "Press a shortcut…"
@@ -1122,7 +1153,9 @@
         }
 
         const settings = panel("Desktop appearance", ...controls);
+
         content.append(settings);
+
         refresh = () => {
             refreshControls(settings, "appearance");
             const text = {
@@ -1134,6 +1167,7 @@
                 "web-view":
                     "This version of macOS cannot make the Pi Pocket page see-through. The page uses a solid background.",
             };
+
             note.textContent = text[state.window.effect] ?? "";
             note.hidden = !note.textContent;
         };
