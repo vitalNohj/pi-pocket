@@ -122,7 +122,7 @@ namespace PiPocket
                 epoch++;
                 readyAt = -1;
                 documentReady = false;
-                if (!processExited) { host.Log("Page recovery (" + Role + "): renderer exited."); }
+                if (!processExited) { host.WriteWebViewLog("Page recovery (" + Role + "): renderer exited."); }
                 processExited = true;
                 browserExited |= args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited;
                 // Recover outside the callback. The old controller must be disposed before creating a new one.
@@ -288,17 +288,17 @@ namespace PiPocket
                 if (attempt == 0)
                 {
                     attempt++;
-                    host.Log("Page recovery (" + Role + "): reloading.");
+                    host.WriteWebViewLog("Page recovery (" + Role + "): reloading.");
                     RetryNavigation();
                 }
                 else if (attempt == 1)
                 {
-                    host.Log("Page recovery (" + Role + "): recreating.");
+                    host.WriteWebViewLog("Page recovery (" + Role + "): recreating.");
                     host.RecreatePage(this, entryAddress, recoveryAddress, boundsFile, 2);
                 }
                 else
                 {
-                    host.Log("Page recovery (" + Role + "): stopped.");
+                    host.WriteWebViewLog("Page recovery (" + Role + "): stopped.");
                     PresentRecovery("failed", "The page could not recover. Reload it or open Desktop Settings to check the connection.");
                 }
                 return;

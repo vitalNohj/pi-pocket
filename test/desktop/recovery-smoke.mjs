@@ -4,7 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
@@ -23,7 +23,7 @@ const env = {
     PI_POCKET_RECOVERY_SMOKE: "1",
 };
 const logFile = windows
-    ? join(dirname(exe), "launcher.log")
+    ? join(state, "webview2.log")
     : join(homedir(), "Library", "Logs", "Pi Pocket", "launcher.log");
 const read = (file) => readFile(file, "utf8").catch(() => "");
 const previousLog = (await read(logFile)).length;
@@ -257,6 +257,9 @@ try {
     await exec(exe, ["--quit"], { env, timeout: 15_000 });
     await until("Quit ended the installed app", exited, 15_000);
     console.log("Switching cancelled the old view's retry. Reload on fresh Home opened no server.");
+} catch (error) {
+    console.error("Recovery fixture requests:", JSON.stringify(requests));
+    throw error;
 } finally {
     if (pid && !exited()) {
         await exec(exe, ["--quit"], { env, timeout: 15_000 }).catch(() => {});
