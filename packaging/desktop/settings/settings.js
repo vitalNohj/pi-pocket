@@ -952,7 +952,8 @@
 
             if (input.type === "checkbox") {
                 input.checked = value;
-            } else {
+            } else if (input.type !== "number" || input !== document.activeElement) {
+                // A native status update must not replace a number as the user types it.
                 input.value = value;
             }
         }

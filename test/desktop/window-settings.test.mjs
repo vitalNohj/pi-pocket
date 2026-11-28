@@ -9,18 +9,31 @@ const source = readFileSync(
     "utf8",
 );
 
-async function recorder(platform) {
+async function mountSettings(platform, currentSection) {
     const elements = [];
 
-    const makeElement = () => {
+    const makeElement = (tag) => {
         const element = {
+            tag,
+            children: [],
             dataset: {},
             add() {},
-            append() {},
-            replaceChildren() {},
+            append(...items) {
+                this.children.push(...items.filter((item) => item?.children));
+            },
+            replaceChildren(...items) {
+                this.children.length = 0;
+                this.append(...items);
+            },
             setAttribute() {},
             removeAttribute() {},
-            querySelectorAll: () => [],
+            querySelectorAll() {
+                return this.children.flatMap((child) =>
+                    child.name && (child.tag === "input" || child.tag === "select")
+                        ? [child]
+                        : child.querySelectorAll(),
+                );
+            },
         };
 
         elements.push(element);
@@ -30,26 +43,28 @@ async function recorder(platform) {
 
     const section = makeElement();
 
-    section.dataset.section = "window";
+    section.dataset.section = currentSection;
     const state = initialState(platform, "1.0.0", false);
     const fields = new Map();
     const patches = [];
     let receive;
+    const document = {
+        activeElement: null,
+        documentElement: makeElement(),
+        createElement: makeElement,
+        querySelectorAll: () => [section],
+        querySelector(selector) {
+            if (!fields.has(selector)) {
+                fields.set(selector, makeElement());
+            }
+
+            return fields.get(selector);
+        },
+        addEventListener() {},
+    };
 
     runInNewContext(source, {
-        document: {
-            documentElement: makeElement(),
-            createElement: makeElement,
-            querySelectorAll: () => [section],
-            querySelector(selector) {
-                if (!fields.has(selector)) {
-                    fields.set(selector, makeElement());
-                }
-
-                return fields.get(selector);
-            },
-            addEventListener() {},
-        },
+        document,
         Option: class {},
         matchMedia: () => ({ matches: false, addEventListener() {} }),
         setTimeout,
@@ -62,7 +77,7 @@ async function recorder(platform) {
                     },
                     postMessage(packet) {
                         if (packet.command === "getState") {
-                            receive({ type: "section", section: "window" });
+                            receive({ type: "section", section: currentSection });
                         } else {
                             patches.push(packet);
                         }
@@ -74,6 +89,12 @@ async function recorder(platform) {
         },
     });
     await Promise.resolve();
+
+    return { document, elements, patches, receive, state };
+}
+
+async function recorder(platform) {
+    const { elements, patches } = await mountSettings(platform, "window");
     const button = elements.find((element) => /^Change shortcut/.test(element.textContent));
 
     assert.ok(button, "Desktop Settings rendered the shortcut recorder");
@@ -113,4 +134,25 @@ test("macOS still records the physical position used by its native hotkey", asyn
 
     shortcut.start();
     assert.equal(shortcut.press({ key: "a", code: "KeyQ", keyCode: 0x41 }), "Ctrl+Q");
+});
+
+test("a native effect update does not replace opacity while the user edits it", async () => {
+    const { document, elements, patches, receive, state } = await mountSettings(
+        "macos",
+        "appearance",
+    );
+    const opacity = elements.find((element) => element.name === "opacity");
+    const next = { ...state, revision: 1, window: { ...state.window, effect: "available" } };
+
+    assert.equal(opacity.value, 82);
+    document.activeElement = opacity;
+    opacity.value = "2";
+    receive({ type: "state", state: next });
+    assert.equal(opacity.value, "2");
+
+    opacity.value = "28";
+    opacity.valueAsNumber = 28;
+    document.activeElement = null;
+    await opacity.onchange();
+    assert.equal(patches.at(-1).value.appearance.opacity, 28);
 });
