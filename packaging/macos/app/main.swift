@@ -218,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     lazy var openWhenReady = !CommandLine.arguments.contains("--hidden") &&
         !(CommandLine.arguments.contains("--login") && (windowPrefs.startHidden ?? WindowLogin.legacyHidden))
     var quitting = false
+    var unattendedQuit = false
+    var confirmingRunnerQuit = false
     var checkedSignIn = false
     var termSource: DispatchSourceSignal?
     lazy var sessionBridge = BridgeMac(showMain: { [weak self] in self?.openWindow() }, badge: { [weak self] count in
@@ -252,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
         center.addObserver(forName: openNotice, object: nil, queue: .main) { [weak self] _ in self?.openWindow() }
         center.addObserver(forName: newSessionNotice, object: nil, queue: .main) { [weak self] _ in self?.requestNewSession() }
-        center.addObserver(forName: quitNotice, object: nil, queue: .main) { _ in NSApp.terminate(nil) }
+        center.addObserver(forName: quitNotice, object: nil, queue: .main) { [weak self] _ in self?.requestUnattendedQuit() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -269,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         signal(SIGTERM, SIG_IGN)
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 
-        term.setEventHandler { NSApp.terminate(nil) }
+        term.setEventHandler { [weak self] in self?.requestUnattendedQuit() }
         term.resume()
         termSource = term
 
@@ -384,11 +386,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if quitting { return .terminateLater }
+        guard confirmRunnerQuit() else { return .terminateCancel }
+        if quitting { return .terminateLater }
         quitting = true
         windowHotkey?.clear()
         windowDownloads.close()
         dictation.close()
-        controller?.close()
+        let ownedController = controller
+        ownedController?.close()
         closeSessionWindows()
         settings?.window.close()
         let loop = CFRunLoopGetMain()
@@ -399,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 // Only this app's own direct child. A borrowed launcher has no Process handle here.
                 self.launcher?.terminate()
             }
+            ownedController?.waitForExit()
             // AppKit waits in modal panel mode after .terminateLater. Use that mode for the reply.
             CFRunLoopPerformBlock(loop, mode) { sender.reply(toApplicationShouldTerminate: true) }
             CFRunLoopWakeUp(loop)

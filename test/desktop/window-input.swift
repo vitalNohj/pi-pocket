@@ -27,6 +27,98 @@ func window() -> (Int, CGRect)? {
     return windows.first
 }
 
+func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
+    return value
+}
+
+func elementAttribute(_ item: AXUIElement, _ name: String) -> AXUIElement? {
+    guard let value = attribute(item, name), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    return (value as! AXUIElement)
+}
+
+func hasName(_ item: AXUIElement, _ name: String, prefix: Bool = false) -> Bool {
+    [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
+        guard let text = attribute(item, $0) as? String else { return false }
+        return prefix ? text.hasPrefix(name) : text == name
+    }
+}
+
+func named(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: Bool = false) -> AXUIElement? {
+    var queue = roots
+    var index = 0
+    while index < queue.count && index < 1500 {
+        let item = queue[index]
+        index += 1
+        if role == nil || attribute(item, kAXRoleAttribute) as? String == role {
+            if hasName(item, name, prefix: prefix) { return item }
+            if let label = elementAttribute(item, kAXTitleUIElementAttribute), hasName(label, name, prefix: prefix) { return item }
+        }
+        queue.append(contentsOf: attribute(item, kAXChildrenAttribute) as? [AXUIElement] ?? [])
+    }
+    return nil
+}
+
+func waitForNamed(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: Bool = false) -> AXUIElement {
+    let start = ProcessInfo.processInfo.systemUptime
+    while ProcessInfo.processInfo.systemUptime - start < 15 {
+        if let item = named(roots, name, role: role, prefix: prefix) { return item }
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+    fail("Could not see '\(name)' (\(role ?? "any role")) in the installed app or menu bar.")
+}
+
+func bounds(_ item: AXUIElement) -> CGRect? {
+    guard let position = attribute(item, kAXPositionAttribute), CFGetTypeID(position) == AXValueGetTypeID(),
+          let extent = attribute(item, kAXSizeAttribute), CFGetTypeID(extent) == AXValueGetTypeID()
+    else { return nil }
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(position as! AXValue, .cgPoint, &point),
+          AXValueGetValue(extent as! AXValue, .cgSize, &size), size != .zero
+    else { return nil }
+    return CGRect(origin: point, size: size)
+}
+
+func clickCenter(_ item: AXUIElement) {
+    guard let rect = bounds(item) else { fail("The control has no screen bounds.") }
+    click(CGPoint(x: rect.midX, y: rect.midY))
+}
+
+func press(_ item: AXUIElement) {
+    if AXUIElementPerformAction(item, kAXPressAction as CFString) != .success { clickCenter(item) }
+}
+
+func capture(_ arguments: [String]) {
+    let command = Process()
+    command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    command.arguments = ["-x"] + arguments
+    do { try command.run() }
+    catch { fail("Could not start screencapture.") }
+    command.waitUntilExit()
+    if command.terminationStatus != 0 { fail("Could not capture the installed app.") }
+}
+
+if operation == "tray-shot" {
+    guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else { fail("The menu bar driver needs Accessibility permission.") }
+    let app = AXUIElementCreateApplication(pid)
+    guard let extras = attribute(app, "AXExtrasMenuBar"), CFGetTypeID(extras) == AXUIElementGetTypeID()
+    else { fail("The app has no accessible π menu bar item.") }
+    let bar = extras as! AXUIElement
+    let item = named([bar], "π") ?? (attribute(bar, kAXChildrenAttribute) as? [AXUIElement])?.first
+    guard let item = item else { fail("Could not find the π menu bar item.") }
+    clickCenter(item)
+    let row = waitForNamed([item, bar, app], args[3], role: kAXMenuItemRole)
+    guard let menu = elementAttribute(row, kAXParentAttribute), let menuBounds = bounds(menu), let itemBounds = bounds(item)
+    else { fail("The open π menu has no screen bounds.") }
+    let region = menuBounds.union(itemBounds).integral
+    let crop = "\(Int(region.minX)),\(Int(region.minY)),\(Int(region.width)),\(Int(region.height))"
+    capture(["-R", crop, args[4]])
+    clickCenter(row)
+    exit(0)
+}
+
 var found: (Int, CGRect)?
 for _ in 0..<60 {
     found = window()
@@ -59,12 +151,6 @@ func waitForFocusedField(_ expected: String) {
     guard AXIsProcessTrusted() else { fail("macOS has not authorized accessibility read-back for the installer input driver.") }
     let app = AXUIElementCreateApplication(pid)
 
-    func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
-        return value
-    }
-
     // Poll observations only. Do not post more input or change the field.
     let start = ProcessInfo.processInfo.systemUptime
     while ProcessInfo.processInfo.systemUptime - start < 5 {
@@ -79,11 +165,15 @@ func waitForFocusedField(_ expected: String) {
     fail("The focused Server address field did not contain the fixture address.")
 }
 
-func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
+func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
         // The installer runs other UI fixtures in this same desktop session.
         event.flags = pressed ? flags : []
+        if let text = text {
+            let units = Array(text.utf16)
+            units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
+        }
         event.post(tap: .cghidEventTap)
     }
 }
@@ -102,12 +192,7 @@ func click(_ point: CGPoint) {
 switch operation {
 case "find": break
 case "shot":
-    let capture = Process()
-    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    capture.arguments = ["-x", "-o", "-l", String(number), args[4]]
-    try capture.run()
-    capture.waitUntilExit()
-    if capture.terminationStatus != 0 { fail("Could not capture the installed window.") }
+    capture(["-o", "-l", String(number), args[4]])
 case "dictation-menu":
     prepareInput()
     key(109, flags: [.maskControl, .maskShift]) // Ctrl+Shift+F10 in the isolated fixture profile.
@@ -125,6 +210,22 @@ case "click":
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
+case "press", "expect-text", "expect-prefix", "focus-field":
+    prepareInput()
+    guard AXIsProcessTrusted() else { fail("The app's input driver needs Accessibility permission.") }
+    let app = AXUIElementCreateApplication(pid)
+    if operation == "focus-field" {
+        // Match the editable control, not the adjacent static text with the same name.
+        let field = waitForNamed([app], args[4], role: kAXTextFieldRole)
+        clickCenter(field)
+        if let focused = elementAttribute(app, kAXFocusedUIElementAttribute), CFEqual(focused, field) { break }
+        guard AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
+            fail("Could not focus '\(args[4])'.")
+        }
+    } else {
+        let item = waitForNamed([app], args[4], prefix: operation == "expect-prefix")
+        if operation == "press" { press(item) }
+    }
 case "type":
     prepareInput()
     // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.
@@ -132,6 +233,12 @@ case "type":
     pasteboard.clearContents()
     guard pasteboard.setString(args[4], forType: .string) else { fail("Cannot copy the test address.") }
     key(9, flags: .maskCommand) // Cmd+V
+case "type-private":
+    prepareInput()
+    guard let code = readLine(), code.range(of: "^[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$", options: .regularExpression) != nil else {
+        fail("Expected a disposable code on stdin.")
+    }
+    for character in code { key(0, text: String(character)) }
 case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])

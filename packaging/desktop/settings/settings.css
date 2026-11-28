@@ -180,6 +180,27 @@ footer {
 .parts .field {
     min-width: 0;
 }
+.runner-status {
+    margin-block-start: 12px;
+}
+.runner-link {
+    min-inline-size: 0;
+    padding: 8px 14px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin: 12px 0 0;
+}
+.runner-link legend {
+    font-weight: 600;
+}
+.runner-trust {
+    color: var(--alert);
+}
+.runner-log {
+    max-block-size: 220px;
+    overflow: auto;
+    padding-inline-start: 22px;
+}
 button,
 input,
 select,

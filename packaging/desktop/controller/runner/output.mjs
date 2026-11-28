@@ -1,3 +1,5 @@
+import { serverAddress } from "../connection/probe.mjs";
+
 // The start command writes activity on stdout. The rest of its output is for a person, not a protocol.
 const ACTIVITY = "PI-POCKET-ACTIVITY ";
 
@@ -106,25 +108,8 @@ export function runnerLog(line, server) {
 }
 
 export function runnerAddress(given) {
-    if (typeof given !== "string" || given.length > 2048 || /[\x00-\x20\x7f]/.test(given.trim())) {
-        return;
-    }
-
-    try {
-        const url = new URL(given.trim());
-
-        if (
-            (url.protocol === "http:" || url.protocol === "https:") &&
-            !url.username &&
-            !url.password &&
-            !url.search &&
-            !url.hash
-        ) {
-            return url.href.replace(/\/+$/, "");
-        }
-    } catch {
-        // The app only accepts a full address. The CLI decides if plain HTTP is permitted.
-    }
+    // The CLI decides if plain HTTP is permitted.
+    return serverAddress(given)?.replace(/\/+$/, "");
 }
 
 export function runnerIdentity(lines) {

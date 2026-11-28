@@ -322,7 +322,7 @@ namespace PiPocket
                     switch (WaitHandle.WaitAny(new[] { openEvent, quitEvent, newEvent }))
                     {
                         case 0: OnUi(delegate { OpenWindow(); }); break;
-                        case 1: OnUi(delegate { Quit(); }); return;
+                        case 1: OnUi(delegate { Quit(unattended: true); }); return; // Setup and uninstall use --quit.
                         case 2:
                             OnUi(delegate
                             {
@@ -528,12 +528,10 @@ namespace PiPocket
             Report("local", Local("error", false, false, null, message));
         }
 
-        void Quit()
+        void Quit(bool unattended = false)
         {
-            if (quitting)
-            {
-                return;
-            }
+            if (quitting || (!unattended && !ConfirmRunnerQuit())) { return; }
+            if (quitting) { return; } // An unattended Quit can arrive while the dialog is open.
 
             quitting = true;
             tray.Visible = false;
@@ -544,7 +542,8 @@ namespace PiPocket
         {
             if (windowHotkey != null) { windowHotkey.Dispose(); windowHotkey = null; }
             StopDictation();
-            if (controller != null) { controller.Dispose(); }
+            ShellController ownedController = controller;
+            if (ownedController != null) { ownedController.Dispose(); }
             if (settings != null) { settings.Dispose(); }
             CloseWindows();
             Thread stop = new Thread(delegate ()
@@ -558,6 +557,7 @@ namespace PiPocket
                     // The job ends what is left.
                 }
 
+                if (ownedController != null) { ownedController.WaitForExit(); }
                 OnUi(Exit);
             });
             stop.IsBackground = true;

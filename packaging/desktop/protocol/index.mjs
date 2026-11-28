@@ -151,9 +151,15 @@ export function menuModel(state) {
                   },
               ]
             : [];
-    const runner = item("settings.open", `Runner: ${state.runner.label}`, true, {
-        section: "runner",
-    });
+    const { status, working } = state.runner;
+    const runnerLabel = working
+        ? "Working now"
+        : status === "connected"
+          ? "Connected"
+          : ["connecting", "offline", "retrying"].includes(status)
+            ? "Connecting"
+            : "Off";
+    const runner = item("settings.open", `Runner: ${runnerLabel}`, true, { section: "runner" });
     const tray = [
         item("window.open", badge ? `Open Pi Pocket (${badge} need you)` : "Open Pi Pocket"),
         session,

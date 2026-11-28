@@ -185,6 +185,20 @@ jobs:
               run: |
                   "$APP/node/bin/node" test/desktop/runner-installed.mjs
 
+            - name: Link and use the runner from the installed app
+              timeout-minutes: 5
+              run: |
+                  "$APP/node/bin/node" test/desktop/runner-app.mjs "$BUNDLE/Contents/MacOS/Pi Pocket" \
+                      "$RUNNER_TEMP/desktop-input" "$RUNNER_TEMP/runner-evidence"
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: macos-runner-evidence-${{ matrix.arch }}
+                  path: ${{ runner.temp }}/runner-evidence/*.png
+                  if-no-files-found: ignore
+                  retention-days: 14
+
             - name: Start Pi Pocket and check that it answers HTTP
               run: |
                   out="$RUNNER_TEMP/pi-pocket.log"
