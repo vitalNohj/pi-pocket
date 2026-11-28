@@ -809,7 +809,7 @@ namespace PiPocket
 
         void LocalNotice(string body)
         {
-            if (!quitting && NotificationsEnabled) { Bridge.Notices.Local(body); }
+            if (!quitting) { Bridge.Notices.Local(body); }
         }
 
         void OpenEdge()

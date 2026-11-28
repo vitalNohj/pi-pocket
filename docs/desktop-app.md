@@ -45,9 +45,11 @@ A newer installer replaces the app and its package; Menu → **Update Pi Pocket*
 
 ## The app bridge
 
-The embedded windows use the [app bridge](embedders.md) for badges, native notifications, visibility and opening sessions. On Windows the badge is on the taskbar button and in the tray icon's tooltip. The window remembers its size and position. Pi Pocket links that ask for a new window open in another window with the same sign-in. Links to other sites open in the default browser.
+The embedded windows use the [app bridge](embedders.md) for badges, native notifications, visibility and opening sessions. **Pinned Sessions** in the Windows tray or the macOS π and Dock menus shows the pins from the signed-in page. Choose a pin to open the session. The needs-you badge shows on the taskbar or Dock, and in the tray or π item even while the window is hidden. **New Session** in the tray, π menu, Dock or File menu, **Ctrl+N** / **⌘N**, and `pi-pocket://new` all open the page’s New session sheet.
 
-Notifications arrive while the app runs. On Windows they appear as tray balloons. On either system an approval notification has no **Allow** or **Deny** button: click it to open the session.
+The window remembers its size and position. Pi Pocket links that ask for a new window open in another window with the same sign-in. Links to other sites open in the default browser.
+
+Notifications arrive while the app runs. In **Desktop Settings → Notifications**, turn notifications or their sound off, and choose when to show **Allow** on approval requests. **Deny** is available for actionable requests. By default, **Allow** is available only for a permitted command that fits in full. **Always** can offer it for shortened commands, and **Never** removes it. Click a notice to review the session when you need more detail. These choices save as you change them. The server’s **Menu → Notifications** still controls which alerts it sends.
 
 A server on a Unix socket (`--socket`) has no address for the window. The app cannot use it, and its own launcher cannot start while that one runs.
 

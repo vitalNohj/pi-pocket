@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { testBridge } from "./bridge-smoke.mjs";
 import { fixture } from "./fixture.mjs";
 
 const windows = process.platform === "win32";
@@ -15,7 +16,12 @@ const settingsTitle = "Desktop Settings — Pi Pocket";
 const stateFolder = await mkdtemp(join(tmpdir(), "pocket-desktop-smoke-"));
 const data = join(stateFolder, "server-data");
 const settings = join(stateFolder, "desktop.json");
-const environment = { ...process.env, PI_POCKET_DESKTOP_STATE: stateFolder, PI_POCKET_DIR: data };
+const environment = {
+    ...process.env,
+    PI_POCKET_DESKTOP_STATE: stateFolder,
+    PI_POCKET_DIR: data,
+    PI_POCKET_TEST_STATUS_MENU: "1",
+};
 const remote = await fixture({ dictation: Boolean(speechCache) });
 const exec = promisify(execFile);
 let app;
@@ -253,6 +259,7 @@ try {
         "Check did not connect. Connect used the base path. The fixture had no Desktop Settings API or local credentials.",
     );
 
+    await testBridge({ remote, gui, until, prefs, waitForSettings, shot, out, stateFolder });
     await quit();
     await until("Quit ended the app", () => exited(app));
     console.log("The installed app passed the offline Settings and remote Home smoke test.");

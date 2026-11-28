@@ -86,8 +86,9 @@ namespace PiPocket
         {
             bool whole;
             body = Mark(Call, Math.Min(2000, Math.Max(20, limit)), Cut, out whole);
-            if (!May || mode == "never") { return false; }
+            if (!May) { return false; }
             if (mode == "always") { return true; }
+            if (mode != "full") { return false; }
             // Keep a generous margin for the collapsed banner, non-default fonts and text scaling. Open the app
             // instead when the text is not a single, very short line of ordinary printable ASCII.
             if (!whole || Call.Length > 24 || Call.Trim() != Call) { return false; }

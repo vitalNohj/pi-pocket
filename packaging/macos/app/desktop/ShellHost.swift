@@ -34,7 +34,6 @@ extension AppDelegate {
         windowPrefs.developerTools ?? (shellWindowPrefs["developerTools"] as? Bool == true || UserDefaults.standard.bool(forKey: "WebInspector"))
     }
     var closeToTray: Bool { windowPrefs.closeToTray ?? (shellWindowPrefs["closeToTray"] as? Bool ?? true) }
-    var notices: Bool { (prefs["notifications"] as? [String: Any])?["enabled"] as? Bool ?? true }
     var activeHome: [String: Any] { snapshot["home"] as? [String: Any] ?? [:] }
     var assets: URL { Bundle.main.resourceURL!.appendingPathComponent("desktop-assets") }
     var stateFolder: URL {
@@ -91,6 +90,10 @@ extension AppDelegate {
     func applySnapshot(_ next: [String: Any]) {
         if (next["revision"] as? Int ?? -1) < (snapshot["revision"] as? Int ?? -1) { return }
         snapshot = next
+        let notices = prefs["notifications"] as? [String: Any] ?? [:]
+        sessionBridge.notices.configure(enabled: notices["enabled"] as? Bool ?? true,
+            sound: notices["sound"] as? Bool ?? true, mode: notices["approve"] as? String ?? "full",
+            limit: notices["commandLimit"] as? Int ?? 120)
         settings?.send(["v": 1, "type": "state", "state": next])
         let active = activeHome["active"] as? [String: Any] ?? [:]
         let nextPage = ShellPage(active)
@@ -176,6 +179,14 @@ extension AppDelegate {
         report("page", data)
     }
 
+    func reportPins(feed: String?, pins: [BridgePin]) {
+        guard let page = page else { return }
+        let items = pins.map { pin in
+            ["id": String(pin.path.dropFirst(3)), "title": pin.title, "state": pin.state, "label": pin.label, "url": pin.path]
+        }
+        report("pins", ["generation": page.generation, "feed": feed as Any? ?? NSNull(), "items": items])
+    }
+
     func handleOperation(_ action: String, _ data: [String: Any], reply: @escaping ShellController.Reply) {
         switch action {
         case "dictation.toggle", "dictation.copy", "dictation.event":
@@ -188,9 +199,8 @@ extension AppDelegate {
         case "window.newSession": newSession()
         case "window.newWindow": newSessionWindow()
         case "window.pinned":
-            if let id = data["id"] as? String {
-                openWindow()
-                if let view = webView { sessionBridge.openAddress("/s/\(id)", in: view) }
+            if let id = data["id"] as? String, let feed = data["feed"] as? String {
+                sessionBridge.openPin("/s/\(id)", feed: feed)
             }
         case "window.back": frontView?.goBack()
         case "window.forward": frontView?.goForward()
@@ -201,6 +211,11 @@ extension AppDelegate {
         case "window.fullScreen": NSApp.keyWindow?.toggleFullScreen(nil)
         case "window.close": NSApp.keyWindow?.performClose(nil)
         case "window.preferences": break
+        case "notifications.refresh": sessionBridge.notices.refreshPermission()
+        case "notifications.systemSettings":
+            let pane = "x-apple.systempreferences:" + (ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 13
+                ? "com.apple.Notifications-Settings.extension" : "com.apple.preference.notifications")
+            if let url = URL(string: pane) { NSWorkspace.shared.open(url) }
         case "window.devTools": pageNotice("To inspect this view, use the Web Inspector from its context menu.")
         case "app.quit": NSApp.terminate(nil)
         case "help.repository": openHelp("https://github.com/vitalNohj/pi-pocket")
@@ -259,6 +274,11 @@ extension AppDelegate {
             })
         }
         settings?.open(section)
+        sessionBridge.notices.refreshPermission()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if settings?.window.isVisible == true { sessionBridge.notices.refreshPermission() }
     }
 
     func backToPage() {
@@ -305,7 +325,9 @@ extension AppDelegate {
 
     func setBadge(_ count: Int) {
         NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
-        statusItem?.button?.title = count > 0 ? "π \(count)" : "π"
-        statusItem?.button?.toolTip = count > 0 ? "Pi Pocket (\(count) need you)" : "Pi Pocket"
+        let label = count > 0 ? "Pi Pocket (\(count) need you)" : "Pi Pocket"
+        statusItem?.button?.title = count > 99 ? "π 99+" : count > 0 ? "π \(count)" : "π"
+        statusItem?.button?.toolTip = label
+        statusItem?.button?.setAccessibilityLabel(label)
     }
 }

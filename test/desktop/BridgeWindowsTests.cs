@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -46,6 +47,13 @@ namespace PiPocket
             }), "Recognize legacy manifest");
             Check(!BridgeProtocol.Recognises(_ => "{\"name\":\"unrelated\",\"bridge\":1}"), "Reject unrelated server");
 
+            var state = ShellWire.Serializer().Deserialize<Dictionary<string, object>>(
+                "{\"menus\":{\"tray\":[{\"label\":\"Pinned Sessions\",\"items\":[{\"data\":{\"id\":\"17\"}}]}]}}");
+            var pinned = ShellWire.Items(ShellWire.Get(ShellWire.Get(state, "menus"), "tray")).Single();
+            var entry = ShellWire.Items(ShellWire.Get(pinned, "items")).Single();
+            Check(ShellWire.Text(pinned, "label") == "Pinned Sessions" &&
+                ShellWire.Text(ShellWire.Get(entry, "data"), "id") == "17", "Read controller menu groups and items from JSON");
+
             var json = new JavaScriptSerializer();
             var first = NoticeData.Read(json.Deserialize<Dictionary<string, object>>(
                 "{\"tag\":\"done-8\",\"url\":\"/s/8\",\"title\":\"Pi finished · Build\"}"));
@@ -56,11 +64,14 @@ namespace PiPocket
             var approval = NoticeData.Read(json.Deserialize<Dictionary<string, object>>(
                 "{\"tag\":\"approval-test\",\"url\":\"/s/8\",\"approval\":{\"id\":\"test\",\"call\":\"read: notes\",\"may\":true}}"));
             string shown;
-            Check(approval.CanAllow("whenFullyShown", 120, out shown) && shown == "read: notes", "A small full call may be allowed");
+            Check(approval.CanAllow("full", 120, out shown) && shown == "read: notes", "A small full call may be allowed");
             approval.Call = "read:\u202Enotes";
-            Check(!approval.CanAllow("whenFullyShown", 120, out shown) && shown.Contains("[U+202E]"), "Mark hidden text; omit Allow");
+            Check(!approval.CanAllow("full", 120, out shown) && shown.Contains("[U+202E]"), "Mark hidden text; omit Allow");
             approval.Call = new string('a', 100);
-            Check(!approval.CanAllow("whenFullyShown", 20, out shown) && shown.Contains("[shortened]"), "Mark truncation; omit Allow");
+            Check(!approval.CanAllow("full", 20, out shown) && shown.Contains("[shortened]"), "Mark truncation; omit Allow");
+            Check(approval.CanAllow("always", 20, out shown) && shown.Contains("[shortened]"), "Always permits a shortened but eligible call");
+            approval.Call = "read: notes";
+            Check(!approval.CanAllow("never", 120, out shown), "Never omits Allow even for a short call");
             approval.May = false;
             Check(!approval.CanAllow("always", 20, out shown), "The local setting cannot override server eligibility");
 

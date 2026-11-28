@@ -43,6 +43,8 @@ export const WINDOW_ACTIONS = Object.freeze([
     "logs.open",
     "preferences.open",
     "local.log",
+    "notifications.refresh",
+    "notifications.systemSettings",
 ]);
 
 export const HOST_EVENTS = Object.freeze([
@@ -54,6 +56,7 @@ export const HOST_EVENTS = Object.freeze([
     "visibility",
     "power",
     "platform",
+    "notifications",
 ]);
 
 export const HOST_COMMANDS = Object.freeze([
@@ -127,9 +130,18 @@ export function parseRequest(text) {
 
 export const packet = (type, fields) => ({ v: VERSION, type, ...fields });
 
+export const PIN_GLYPHS = Object.freeze({
+    waiting: "◆",
+    limited: "◈",
+    working: "◐",
+    failed: "✕",
+    fresh: "●",
+    seen: "○",
+});
+
 export function menuModel(state) {
     const { active, local } = state.home;
-    const { pins, badge } = state.page;
+    const { pins, pinFeed, badge } = state.page;
     const page = Boolean(active);
     const item = (id, label, enabled = true, data) => ({
         id,
@@ -141,12 +153,17 @@ export function menuModel(state) {
     const session = item("window.newSession", "New Session", page && active.kind !== "preview");
     const newWindow = item("window.newWindow", "New Window", page);
     const pinned =
-        page && pins.length > 0
+        active?.kind === "pocket" && pinFeed && pins.length > 0
             ? [
                   {
-                      label: "Pinned",
-                      items: pins.map(({ id, title, label }) =>
-                          item("window.pinned", `${title} — ${label}`, true, { id }),
+                      label: "Pinned Sessions",
+                      items: pins.map(({ id, title, state, label }) =>
+                          item(
+                              "window.pinned",
+                              `${PIN_GLYPHS[state]} ${title || `Session ${id}`} — ${label}`,
+                              true,
+                              { id, feed: pinFeed },
+                          ),
                       ),
                   },
               ]

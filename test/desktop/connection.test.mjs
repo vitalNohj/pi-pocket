@@ -96,6 +96,93 @@ test("a new install starts on Home and upgrades keep local startup", async (t) =
     assert.equal(migration.controller.snapshot().home.active, null);
 });
 
+test("only the current document/account feed populates the tray and Dock pins", async (t) => {
+    const { controller, call, action, hosts } = await desktop(t, true);
+
+    await controller.begin();
+    const generation = controller.snapshot().home.active.generation;
+    const feed = "decafbad-abcd-4321-8c43-aaaaaaaaaaaa";
+    const report = (event, data) => call("host.report", { event, data: { generation, ...data } });
+    const pin = (id, title, state, label) => ({ id, title, state, label, url: `/s/${id}` });
+    const open = (id, source = feed) => action("window.pinned", { id, feed: source });
+
+    await report("pins", {
+        feed,
+        items: [
+            pin("7", "Test & display", "waiting", "Waiting for you"),
+            pin("4", "Installer", "working", "Working"),
+            pin("01", "Bad ID", "working", "Working"),
+            pin("9007199254740992", "Out of range", "working", "Working"),
+            { ...pin("8", "Wrong route", "seen", "Seen"), url: "/other" },
+        ],
+    });
+    await report("badge", { count: 3 });
+    await report("page", { committedOrigin: "http://127.0.0.1:3469" });
+    const { tray, dock } = controller.snapshot().menus;
+    const group = (menu) => menu.find(({ label }) => label === "Pinned Sessions");
+
+    assert.deepEqual(group(tray).items, [
+        {
+            id: "window.pinned",
+            label: "◆ Test & display — Waiting for you",
+            enabled: true,
+            data: { id: "7", feed },
+        },
+        {
+            id: "window.pinned",
+            label: "◐ Installer — Working",
+            enabled: true,
+            data: { id: "4", feed },
+        },
+    ]);
+    assert.deepEqual(group(dock), group(tray));
+    assert.equal(tray[0].label, "Open Pi Pocket (3 need you)");
+    await assert.rejects(open("8"), { code: "unavailable" });
+    await open("4");
+    assert.equal(hosts.at(-1), "window.pinned");
+
+    await report("pins", { feed: null, items: [] });
+    await report("badge", { count: 0 });
+    assert.equal(group(controller.snapshot().menus.tray), undefined);
+    assert.equal(controller.snapshot().menus.tray[0].label, "Open Pi Pocket");
+    await report("pins", {
+        feed: "decafbad-abcd-4321-8c43-bbbbbbbbbbbb",
+        items: [pin("4", "Same ID, new account", "seen", "Seen")],
+    });
+    await assert.rejects(open("4"), { code: "unavailable" });
+    await assert.rejects(report("pins", { generation: generation + 1, feed, items: [] }), {
+        code: "invalid",
+    });
+});
+
+test("notification preferences save and OS status is separate from them", async (t) => {
+    const current = await desktop(t);
+    const notifications = { enabled: false, sound: false, approve: "always", commandLimit: 20 };
+    const report = (data) => current.call("host.report", { event: "notifications", data });
+
+    assert.equal(current.controller.snapshot().preferences.notifications.approve, "full");
+    await current.call("patchPreferences", { notifications });
+    await report({ permission: "blocked" });
+    await assert.rejects(report({ permission: "invalid" }), { code: "invalid" });
+    await assert.rejects(report({ decision: "private command content" }), { code: "invalid" });
+    await assert.rejects(
+        current.action("notifications.systemSettings", { url: "https://example.invalid" }),
+        { code: "invalid" },
+    );
+
+    for (const patch of [{ commandLimit: 19 }, { commandLimit: 2001 }, { approve: "permitted" }]) {
+        await assert.rejects(current.call("patchPreferences", { notifications: patch }), {
+            code: "invalid",
+        });
+    }
+
+    assert.equal(current.controller.snapshot().notifications.permission, "blocked");
+    assert.deepEqual(
+        (await desktop(t, false, current.folder)).controller.snapshot().preferences.notifications,
+        notifications,
+    );
+});
+
 test("preference patches are atomic and survive an offline reopen", async (t) => {
     const initial = await desktop(t);
 
@@ -180,12 +267,15 @@ test("checks do not change the active connection, and Retry keeps the page gener
 
 test("a saved address never bypasses confirmation for an HTML preview", async (t) => {
     const remote = await fixture();
+
     t.after(() => remote.close());
     const { action, folder } = await desktop(t);
+
     await action("home.connect", { address: remote.address });
     remote.setMode("sso");
 
     const reopened = await desktop(t, false, folder);
+
     await reopened.controller.begin();
     assert.equal(reopened.controller.snapshot().home.active, null);
     assert.equal(reopened.controller.snapshot().home.check.status, "preview");
@@ -197,6 +287,7 @@ test("a saved address never bypasses confirmation for an HTML preview", async (t
     );
 
     const afterPreview = await desktop(t, false, folder);
+
     await afterPreview.controller.begin();
     assert.equal(afterPreview.controller.snapshot().home.active, null);
     remote.setMode("pocket");

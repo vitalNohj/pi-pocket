@@ -126,6 +126,7 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
         func raise() {
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
+            if view?.window?.isMiniaturized == true { view?.window?.deminiaturize(nil) }
             view?.window?.makeKeyAndOrderFront(nil)
         }
 
@@ -140,7 +141,8 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
     let showMain: () -> Void
     let action: (String) -> Void
     let badge: (Int) -> Void
-    private let notificationsEnabled: () -> Bool
+    private let reportPins: (String?, [BridgePin]) -> Void
+    private let reportNotices: (String, String) -> Void
     private let dictation: (WKWebView, [String: Any]) -> Void
     private var documents: [Document] = []
     private var primary: Document?
@@ -148,15 +150,19 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
     private var newUntil: TimeInterval?
     private var newTimer: Timer?
     private var explained = false
-    private(set) var pins: [BridgePin] = []
-    lazy var notices = NoticesMac { [weak self] ticket, choice in self?.activate(ticket, choice) }
+    private var pins: [BridgePin] = []
+    private var pinFeed: String?
+    lazy var notices = NoticesMac(activate: { [weak self] ticket, choice in self?.activate(ticket, choice) },
+        report: reportNotices)
 
     init(showMain: @escaping () -> Void, badge: @escaping (Int) -> Void, action: @escaping (String) -> Void,
-        notificationsEnabled: @escaping () -> Bool, dictation: @escaping (WKWebView, [String: Any]) -> Void = { _, _ in }) {
+        reportPins: @escaping (String?, [BridgePin]) -> Void, reportNotices: @escaping (String, String) -> Void,
+        dictation: @escaping (WKWebView, [String: Any]) -> Void = { _, _ in }) {
         self.showMain = showMain
         self.badge = badge
         self.action = action
-        self.notificationsEnabled = notificationsEnabled
+        self.reportPins = reportPins
+        self.reportNotices = reportNotices
         self.dictation = dictation
     }
 
@@ -260,6 +266,8 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
 
     private func clearFeed(remember: Bool) {
         pins = []
+        pinFeed = nil
+        reportPins(nil, pins)
         badge(0)
         notices.clear(remember: remember)
     }
@@ -268,11 +276,9 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
         if BridgeProtocol.target(path) { document(view)?.deliver("open", ["url": path]) }
     }
 
-    func openPin(_ path: String) {
-        if let primary = primary, pins.contains(where: { $0.path == path }) {
-            primary.raise()
-            primary.deliver("open", ["url": path])
-        }
+    func openPin(_ path: String, feed: String) {
+        if let primary = primary, feed == pinFeed, pins.contains(where: { $0.path == path }),
+            primary.deliver("open", ["url": path]) { primary.raise() }
     }
 
     func newSession() {
@@ -374,8 +380,9 @@ final class BridgeMac: NSObject, WKScriptMessageHandler {
                 return BridgePin(path: "/s/\(id)", title: NoticeData.plain(item["title"] as? String ?? "", 70),
                     state: state, label: NoticeData.plain(item["label"] as? String ?? "", 60))
             }
-        } else if type == "notify", notificationsEnabled(),
-            let message = body["notice"] as? [String: Any], let notice = NoticeData(message) {
+            if pinFeed == nil { pinFeed = UUID().uuidString.lowercased() }
+            reportPins(pinFeed, pins)
+        } else if type == "notify", let message = body["notice"] as? [String: Any], let notice = NoticeData(message) {
             notices.receive(notice, lease: key, auth: auth, modern: doc.modern)
         }
     }

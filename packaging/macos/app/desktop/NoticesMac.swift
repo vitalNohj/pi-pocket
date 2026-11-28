@@ -6,6 +6,7 @@ final class NoticesMac: NSObject, UNUserNotificationCenterDelegate {
     private static let group = "finishes"
     private let center = UNUserNotificationCenter.current()
     private let activate: (NoticeTicket?, String) -> Void
+    private let report: (String, String) -> Void
     private var tickets: [String: NoticeTicket] = [:]
     private var dedup: [Data: Date] = [:]
     private var finishes: [NoticeData] = []
@@ -17,14 +18,17 @@ final class NoticesMac: NSObject, UNUserNotificationCenterDelegate {
     private var locked = false
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
-    var enabled = true
-    var sound = true
-    var allowMode = "whenFullyShown"
-    var commandLimit = 120
-    private(set) var unavailable: String?
+    private var enabled = true
+    private var sound = true
+    private var allowMode = "full"
+    private var commandLimit = 120
+    private var permission = "unknown"
+    private var lastDecision: String?
+    private var unavailable: String?
 
-    init(activate: @escaping (NoticeTicket?, String) -> Void) {
+    init(activate: @escaping (NoticeTicket?, String) -> Void, report: @escaping (String, String) -> Void) {
         self.activate = activate
+        self.report = report
         super.init()
         let deny = UNNotificationAction(identifier: "deny", title: "Deny", options: [.foreground])
         let allow = UNNotificationAction(identifier: "allow", title: "Allow", options: [.foreground])
@@ -67,8 +71,48 @@ final class NoticesMac: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    func configure(enabled: Bool, sound: Bool, mode: String, limit: Int) {
+        // Remove cards and invalidate action tickets made under the previous policy.
+        if (self.enabled && !enabled) || allowMode != mode || commandLimit != limit { clear(remember: enabled) }
+        self.enabled = enabled
+        self.sound = sound
+        allowMode = mode
+        commandLimit = limit
+    }
+
+    private static func permissionState(_ settings: UNNotificationSettings) -> String {
+        switch settings.authorizationStatus {
+        case .notDetermined: return "prompt"
+        case .authorized, .provisional: return settings.alertSetting == .disabled ? "blocked" : "allowed"
+        case .denied: return "blocked"
+        default: return "unknown"
+        }
+    }
+
+    func refreshPermission() {
+        center.getNotificationSettings { [weak self] settings in
+            DispatchQueue.main.async { self?.setPermission(Self.permissionState(settings)) }
+        }
+    }
+
+    private func setPermission(_ next: String) {
+        guard permission != next else { return }
+        permission = next
+        report("permission", next)
+    }
+
+    // Diagnose policy without recording titles, destinations, approval IDs or commands.
+    private func decision(_ code: String) {
+        guard lastDecision != code else { return }
+        lastDecision = code
+        report("decision", code)
+    }
+
     func receive(_ data: NoticeData, lease: String, auth: Int, modern: Bool) {
-        guard enabled else { return }
+        guard enabled else {
+            if data.approval != nil { decision("suppressed") }
+            return
+        }
         prune()
         let fingerprint = Self.digest([data.tag, data.stamp, data.path, data.title, data.body, data.call].joined(separator: "\n"))
         guard dedup[fingerprint] == nil else { return }
@@ -130,16 +174,25 @@ final class NoticesMac: NSObject, UNUserNotificationCenterDelegate {
         content.categoryIdentifier = slot == Self.group ? Self.group : approval == nil ? "" : ticket.allow ? "allow-deny" : "deny-only"
         content.threadIdentifier = "pi-pocket"
         let notification = UNNotificationRequest(identifier: slot, content: content, trigger: nil)
+        if command != nil {
+            let actions = ticket.allow ? "allow-deny" : approval != nil ? "deny" : "no-actions"
+            decision("\(content.sound == nil ? "silent" : "sound").\(actions)")
+        }
         center.getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
                 guard let self = self, self.tickets[slot]?.token == ticket.token else { return }
-                switch settings.authorizationStatus {
-                case .notDetermined:
+                let status = Self.permissionState(settings)
+                self.setPermission(status)
+                switch status {
+                case "prompt":
                     self.center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-                        DispatchQueue.main.async { self?.post(notification, ticket, granted: granted) }
+                        DispatchQueue.main.async {
+                            self?.refreshPermission()
+                            self?.post(notification, ticket, granted: granted)
+                        }
                     }
-                case .authorized, .provisional:
-                    self.post(notification, ticket, granted: settings.alertSetting != .disabled)
+                case "allowed":
+                    self.post(notification, ticket, granted: true)
                 default:
                     self.post(notification, ticket, granted: false)
                 }
