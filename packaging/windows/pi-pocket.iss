@@ -1,8 +1,7 @@
 ; Pi Pocket's Windows installer (Inno Setup), for the current user only, without admin rights. It installs a portable
 ; Node.js in {app}\node and the pi-pocket package in a private npm prefix, {app}\app, which the user owns, so in-app
 ; updates work (a newer package that the app updated to stays), the desktop app, and pi-pocket.cmd.
-; build.ps1 compiles it: ISCC /DAppVersion=0.30.0 /DNodeDir=<unpacked Node.js> /DDesktopDir=<Pi Pocket.exe's folder>
-; /DAppDir=<the app folder> pi-pocket.iss
+; build.ps1 compiles it with NodeDir, DesktopDir, AppDir and WebView2RuntimeDir for a full Setup.
 
 #ifndef AppVersion
   #error Define AppVersion, such as /DAppVersion=0.30.0
@@ -16,6 +15,9 @@
   #endif
   #ifndef AppDir
     #error Define AppDir, the npm prefix with the pi-pocket package that bundle-app.mjs made
+  #endif
+  #ifndef WebView2RuntimeDir
+    #error Define WebView2RuntimeDir, the folder of the Microsoft Evergreen Standalone installers
   #endif
 #endif
 #ifndef OutputDir
@@ -82,6 +84,9 @@ Type: files; Name: "{app}\install.log"
 
 [Files]
 #ifndef DesktopUpdate
+; Extract only the native, already compressed redist into {tmp}, and only if the Runtime is missing.
+Source: "{#WebView2RuntimeDir}\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; Flags: dontcopy nocompression
+Source: "{#WebView2RuntimeDir}\MicrosoftEdgeWebView2RuntimeInstallerARM64.exe"; Flags: dontcopy nocompression
 Source: "{#NodeDir}\*"; DestDir: "{app}\node"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#AppDir}\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs; Check: ReplaceApp
 #endif
@@ -150,6 +155,10 @@ begin
     Result := 'This desktop update needs an existing Pi Pocket install.';
 end;
 #else
+const
+  { Microsoft's documented Evergreen Runtime registration uses the 32-bit registry view, independent of Setup's bitness. }
+  WebView2Client = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+
 var
   KeepApp: Boolean;
   UpgradingDesktop: Boolean;
@@ -416,6 +425,62 @@ begin
   Result := not InstallStartup;
 end;
 
+function ReadWebView2Version(RootKey: Integer; var Version: String): Boolean;
+var
+  PackedVersion: Int64;
+begin
+  Result := False;
+  if RegQueryStringValue(RootKey, WebView2Client, 'pv', Version) then
+    if StrToVersion(Version, PackedVersion) then
+      Result := PackedVersion > 0;
+end;
+
+function FindWebView2Runtime(var Version: String): Boolean;
+begin
+  Result := ReadWebView2Version(HKLM32, Version);
+  if not Result then
+    Result := ReadWebView2Version(HKCU32, Version);
+end;
+
+function PrepareWebView2: String;
+var
+  Version, Installer: String;
+  Code: Integer;
+begin
+  Result := '';
+  if FindWebView2Runtime(Version) then
+  begin
+    Log('Keeping existing WebView2 Runtime ' + Version + '.');
+    exit;
+  end;
+
+  { Microsoft installs the Runtime per machine if its installer runs elevated. Do not do that from per-user Setup. }
+  if IsAdmin then
+  begin
+    Result := 'The WebView2 Runtime is missing. Close Setup and run it without administrator rights to install the Runtime for your account.';
+    exit;
+  end;
+
+  if IsArm64 then
+    Installer := 'MicrosoftEdgeWebView2RuntimeInstallerARM64.exe'
+  else
+    Installer := 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe';
+  Log('Installing the bundled WebView2 Runtime: ' + Installer);
+  ExtractTemporaryFile(Installer);
+  if not Exec(ExpandConstant('{tmp}\') + Installer, '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Log('Could not start the WebView2 Runtime installer: ' + SysErrorMessage(Code))
+  else
+  begin
+    Log('The WebView2 Runtime installer exited with ' + IntToStr(Code) + '.');
+    if (Code = 0) and FindWebView2Runtime(Version) then
+    begin
+      Log('Installed WebView2 Runtime ' + Version + '.');
+      exit;
+    end;
+  end;
+  Result := 'Setup could not install the Microsoft WebView2 Runtime. Check whether your Windows policy permits it, then run Setup again.';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Installed: String;
@@ -427,6 +492,10 @@ begin
     Result := ExpandConstant('{app}') + ' is not empty and holds no Pi Pocket install. Choose an empty folder.';
     exit;
   end;
+
+  Result := PrepareWebView2;
+  if Result <> '' then
+    exit;
 
   if not MayStopPiPocket('Setup') then
   begin
