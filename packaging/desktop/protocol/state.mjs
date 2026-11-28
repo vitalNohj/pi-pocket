@@ -6,7 +6,7 @@ export const choice =
 export const integer = (min, max) => (value) =>
     Number.isInteger(value) && value >= min && value <= max;
 
-export const effects = ["available", "unsupported", "page", "full-screen"];
+export const effects = ["available", "unsupported", "page", "full-screen", "web-view"];
 export const materials = {
     windows: ["acrylic", "mica"],
     macos: ["window", "sidebar", "dark", "full-screen"],

@@ -196,6 +196,19 @@ test("auto-save retries a sharing error without changing the old settings first"
     assert.equal(JSON.parse(await readFile(file, "utf8")).preferences.appearance.opacity, 28);
 });
 
+test("the Mac web view fallback does not turn off the saved see-through preference", async (t) => {
+    const app = await open(t, { platform: "macos" });
+    await app.patch({ appearance: { transparent: true } });
+    await app.call("host.report", { event: "window.status", data: { effect: "web-view" } });
+    const { preferences, window } = await app.state();
+    assert.equal(window.effect, "web-view");
+    assert.equal(preferences.appearance.transparent, true);
+    await assert.rejects(
+        app.call("host.report", { event: "window.status", data: { effect: "unknown" } }),
+        { code: "invalid" },
+    );
+});
+
 test("launch at login reflects native registration instead of a saved preference", async (t) => {
     const folder = await profile(t);
     const app = await open(t, {

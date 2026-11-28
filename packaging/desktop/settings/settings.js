@@ -1131,6 +1131,8 @@
                     : "See-through is unavailable when Reduce Transparency or Increase Contrast is on.",
                 page: "See-through applies to supported Pi Pocket pages, not Desktop Settings or sign-in pages.",
                 "full-screen": "See-through pauses in full screen.",
+                "web-view":
+                    "This version of macOS cannot make the Pi Pocket page see-through. The page uses a solid background.",
             };
             note.textContent = text[state.window.effect] ?? "";
             note.hidden = !note.textContent;

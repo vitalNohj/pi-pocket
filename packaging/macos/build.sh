@@ -198,10 +198,14 @@ if $test_status_menu; then
     app_sources+=(-D DESKTOP_STATUS_SMOKE "$repo/test/desktop/StatusMenuFixture.swift")
 fi
 
+web_background="$here/app/desktop/WebViewBackground"
 for arch in arm64 x86_64; do
+    clang -target "$arch-apple-macos13.5" -fobjc-arc -fobjc-exceptions \
+        -c "$web_background.m" -o "$work/web-background-$arch.o"
     swiftc -O -swift-version 5 -target "$arch-apple-macos13.5" -framework Cocoa -framework WebKit \
         -framework UserNotifications -framework Carbon -framework AVFoundation \
-        -o "$work/app-$arch" "$work/main.swift" "${app_sources[@]}"
+        -import-objc-header "$web_background.h" \
+        -o "$work/app-$arch" "$work/main.swift" "${app_sources[@]}" "$work/web-background-$arch.o"
     swiftc -O -swift-version 5 -parse-as-library -target "$arch-apple-macos13.5" \
         -o "$work/runner-host-$arch" "$runner_source"
 done

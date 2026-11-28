@@ -90,9 +90,11 @@ test("layout reads native button bounds at startup and after geometry changes", 
     assert.equal(events[0].titlebarAreaRect.width, 760);
     assert.equal(env.attrs.get("data-pocket-window-material"), false);
     env.window.__piPocketWindow.ready(() => false);
+    assert.equal(env.attrs.get("data-pocket-window-material"), true);
     assert.equal(env.style.get("--pocket-window-opacity"), "82%");
     env.window.__piPocketWindow.update({ side: "none", width: 0, height: 0, tint: null });
     assert.equal(overlay.visible, false);
+    assert.equal(env.attrs.get("data-pocket-window-material"), false);
     assert.equal(env.style.has("--pocket-window-opacity"), false);
 });
 
