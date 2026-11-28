@@ -260,7 +260,7 @@ async function smoke() {
             "Installed runner: linked, enabled, connected, and reported Working now and idle.",
         );
 
-        const link = join(dir, "runner", "link.json");
+        const link = join(dir, "link.json");
         const beforeUpdate = readFileSync(link);
 
         await stagedServerUpdate(root);
