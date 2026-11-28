@@ -5,11 +5,16 @@ updater checks the latest successful `desktop-native` push run in `vitalNohj/pi-
 request or manually dispatched builds. `0.30.1-desktop.N` identifies workflow run number `N`. It is
 not the version floor for the server; that floor comes from the last full install.
 
-GitHub requires sign-in to download Actions artifacts. Open the artifact link in the system browser
-and select the downloaded `.exe` or `.pkg` in a native file picker. The app does not ask for or store a
-GitHub token. It checks the selected file against the digest and size from GitHub before it stages
-the installer. This is an integrity check from the fork's workflow, not a code signature. These
-unsigned test-build artifacts expire after 14 days.
+In **Desktop Settings → Updates**, see the current app version and the newest build. **Check now**
+checks the fork. GitHub requires sign-in to download Actions artifacts, so **Download** opens
+GitHub in the system browser. The app does not handle GitHub credentials. Use **Select installer…**
+to pick the downloaded `.exe` or `.pkg`. The app checks its size and SHA-256 against GitHub's metadata.
+This checks the file from the fork's workflow; it is not a code signature. These unsigned test
+builds expire after 14 days.
+
+When Settings shows **Ready to apply**, **Apply** stages the verified installer for the next
+start. It does not close the app, restart a server, or update the server or runner. The Windows
+tray and the macOS **π** menu show **Update ready - restart to apply** only after staging.
 
 The updater keeps a pending record and the installer in the desktop install's `desktop-update-cache`
 folder. Before a new app instance starts its own server, it checks for a staged update. A detached
@@ -18,12 +23,7 @@ same user, then opens the app. A failed install records the result and opens the
 on every start. On Windows the update runs Inno Setup silently; on macOS it uses the home-directory
 package target. Neither updater replaces Node, the server package, or its runner files.
 
-Desktop Settings can use `check` to get the version and download URL, `stage` with the path selected
-by the native picker, and `state` for the staged version or the last install result. For Apply now,
-the host must let `handoff` take over only if it can quit without stopping a server. While the
-app owns a server that quits with the app, keep the update staged for its next start. An app update
-must not call Restart Server or stop a server to install the update.
-
-The desktop workflow installs version N, checks and stages version N+1 from a loopback fixture, and
-checks the restarted app, the existing console server, and the files kept across the update. The
-fixture cannot change the update URL in a shipped app.
+The desktop workflow uses the installed Settings window to check and stage a fixture update on
+Windows, Apple silicon, and Intel. It captures the Updates states and checks that the next app
+start runs the new build. It also checks that the existing console server keeps running with the
+same runtime, settings and data. A shipping app has no fixture feed override.

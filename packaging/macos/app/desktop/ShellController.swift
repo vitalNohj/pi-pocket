@@ -17,7 +17,7 @@ final class ShellController {
     init(folder: URL, assets: URL, existing: Bool, receive: @escaping ([String: Any]) -> Void, disconnected: @escaping () -> Void) throws {
         child.executableURL = appFolder.appendingPathComponent("node/bin/node")
         child.arguments = [assets.appendingPathComponent("controller/main.mjs").path, folder.path, "macos", appVersion,
-            existing ? "existing" : "new"]
+            existing ? "existing" : "new", Bundle.main.bundlePath]
         var environment = ProcessInfo.processInfo.environment
 
         environment.removeValue(forKey: "NODE_OPTIONS")

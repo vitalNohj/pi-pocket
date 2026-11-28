@@ -1,23 +1,14 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import {
-    copyFile,
-    lstat,
-    mkdir,
-    mkdtemp,
-    readFile,
-    rename,
-    rm,
-    stat,
-    writeFile,
-} from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir, uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
     checkDesktopUpdate,
+    DesktopUpdateError,
     installerLimit,
     installerName,
     isDesktopVersion,
@@ -26,15 +17,21 @@ import {
 } from "../../feed/desktop-builds.mjs";
 
 export const stateFolderName = "desktop-update-cache";
+const verifiedFile = "verified.json";
 const pendingFile = "pending.json";
 const handoffFile = "applying.json";
+const sizeError = "The desktop installer has the wrong size.";
+const hashError = "The desktop installer does not match GitHub's SHA-256.";
+const quitError = "Pi Pocket did not close. Check for the desktop update again.";
 const lockTime = 10 * 60 * 1000;
 
 async function readRecord(folder, name) {
     try {
         const file = join(folder, name);
 
-        if ((await stat(file)).size <= 4096) {
+        const info = await lstat(file);
+
+        if (info.isFile() && info.size <= 4096) {
             return JSON.parse(await readFile(file, "utf8"));
         }
     } catch {
@@ -59,6 +56,7 @@ function recordIsValid(update, current, platform) {
     return (
         update &&
         isNewerDesktopVersion(update.version, current) &&
+        typeof update.sha256 === "string" &&
         sha256Pattern.test(update.sha256) &&
         Number.isSafeInteger(update.size) &&
         update.size > 0 &&
@@ -75,7 +73,7 @@ async function verifyInstaller(file, { size, sha256 }) {
     const information = await lstat(file);
 
     if (!information.isFile() || information.size !== size) {
-        throw new Error("The desktop installer has the wrong size.");
+        throw new DesktopUpdateError(sizeError);
     }
 
     const hash = createHash("sha256");
@@ -85,14 +83,14 @@ async function verifyInstaller(file, { size, sha256 }) {
         bytes += chunk.length;
 
         if (bytes > size) {
-            throw new Error("The desktop installer has the wrong size.");
+            throw new DesktopUpdateError(sizeError);
         }
 
         hash.update(chunk);
     }
 
     if (bytes !== size || hash.digest("hex") !== sha256) {
-        throw new Error("The desktop installer does not match GitHub's SHA-256.");
+        throw new DesktopUpdateError(hashError);
     }
 }
 
@@ -119,22 +117,23 @@ function waitForCommand(executable, args, { timeout = 30_000 } = {}) {
     });
 }
 
-// The selected file comes from the system file picker, not from the server page. Always check the
-// pinned feed again before trusting its bytes. No filename or installer flags come from the picker.
-export async function stageDesktopUpdate(current, platform, selected, folder, request) {
-    const candidate = await checkDesktopUpdate(current, platform, request);
-
-    if (candidate.phase !== "available") {
-        throw new Error("There is no newer desktop build to stage. Check again first.");
-    }
-
+// The candidate comes from the pinned feed; only the native file picker supplies the source.
+// Store a verified copy, but never make it eligible for startup until Apply moves its record.
+export async function prepareDesktopUpdate(current, platform, candidate, selected, folder) {
     const { version, sha256, size } = candidate;
     const update = { version, sha256, size, platform };
+
+    if (candidate.phase !== "available" || !recordIsValid(update, current, platform)) {
+        throw new DesktopUpdateError(
+            "There is no newer desktop build to verify. Check again first.",
+        );
+    }
+
     const source = resolve(selected);
     const information = await lstat(source);
 
     if (!information.isFile() || information.size !== size) {
-        throw new Error("Choose the matching installer downloaded from GitHub.");
+        throw new DesktopUpdateError(sizeError);
     }
 
     await mkdir(folder, { mode: 0o700, recursive: true });
@@ -150,19 +149,107 @@ export async function stageDesktopUpdate(current, platform, selected, folder, re
         }
 
         await verifyInstaller(file, update);
-        const old = await readRecord(folder, pendingFile);
+        const old = await readRecord(folder, verifiedFile);
 
         await rename(file, cachedInstaller(folder, update));
-        await writeRecord(folder, pendingFile, update);
-
-        if (recordIsValid(old, current, platform) && old.sha256 !== sha256) {
-            await rm(cachedInstaller(folder, old), { force: true });
-        }
+        await writeRecord(folder, verifiedFile, update);
+        await removeReplacedInstaller(
+            folder,
+            current,
+            platform,
+            old,
+            update,
+            await readRecord(folder, pendingFile),
+        );
     } finally {
         await rm(temp, { recursive: true, force: true });
     }
 
-    return { phase: "staged", current, version };
+    return { phase: "ready", current, version };
+}
+
+async function removeReplacedInstaller(folder, current, platform, old, ...keep) {
+    if (
+        recordIsValid(old, current, platform) &&
+        !keep.some((update) => old.version === update?.version && old.sha256 === update.sha256)
+    ) {
+        await rm(cachedInstaller(folder, old), { force: true }).catch(() => {});
+    }
+}
+
+export async function applyDesktopUpdate(current, platform, folder) {
+    const verifiedPath = join(folder, verifiedFile);
+    const update = await readRecord(folder, verifiedFile);
+
+    if (!recordIsValid(update, current, platform)) {
+        throw new DesktopUpdateError(
+            "There is no verified desktop installer. Check and download it again.",
+        );
+    }
+
+    try {
+        await verifyInstaller(cachedInstaller(folder, update), update);
+    } catch (error) {
+        await rm(verifiedPath, { force: true }).catch(() => {});
+        await removeReplacedInstaller(
+            folder,
+            current,
+            platform,
+            update,
+            await readRecord(folder, pendingFile),
+        );
+
+        throw error;
+    }
+
+    const old = await readRecord(folder, pendingFile);
+
+    await rename(verifiedPath, join(folder, pendingFile));
+    await removeReplacedInstaller(folder, current, platform, old, update);
+
+    return { phase: "staged", current, version: update.version };
+}
+
+// Keep the CLI's combined action for the standalone updater.
+export async function stageDesktopUpdate(current, platform, selected, folder, request) {
+    const candidate = await checkDesktopUpdate(current, platform, request);
+
+    await prepareDesktopUpdate(current, platform, candidate, selected, folder);
+
+    return applyDesktopUpdate(current, platform, folder);
+}
+
+export async function desktopUpdateState(current, platform, folder) {
+    for (const [name, phase] of [
+        [pendingFile, "staged"],
+        [verifiedFile, "ready"],
+    ]) {
+        const saved = await readRecord(folder, name);
+
+        if (recordIsValid(saved, current, platform)) {
+            return { phase, current, version: saved.version };
+        }
+    }
+
+    const last = await readRecord(folder, "last-result.json");
+
+    return { phase: "idle", current, last };
+}
+
+export function lastUpdateError(last, current) {
+    if (last?.phase !== "error" || last.current !== current) {
+        return null;
+    }
+
+    const message = last.message;
+
+    return [sizeError, hashError, quitError].includes(message) ||
+        (typeof message === "string" &&
+            /^The desktop update command did not finish \(exit (?:-?\d{1,10}|timeout)\)\.$/.test(
+                message,
+            ))
+        ? message
+        : "The installer failed on the last start. Check for the update again.";
 }
 
 function layout(app) {
@@ -184,6 +271,10 @@ function layout(app) {
     }
 
     throw new Error("Desktop updates are not available from this install location.");
+}
+
+export function desktopUpdateFolder(app) {
+    return join(layout(resolve(app)).install, stateFolderName);
 }
 
 function runDetached(executable, args, windowsHide = true) {
@@ -308,7 +399,7 @@ async function finish(current, { app, install }, folder, pidText, ticket, hidden
 
     try {
         if (!exited) {
-            throw new Error("Pi Pocket did not close. Check for the desktop update again.");
+            throw new DesktopUpdateError(quitError);
         }
 
         if (!recordIsValid(update, current, process.platform)) {
@@ -390,14 +481,8 @@ async function main([command, current, app, ...args]) {
         case "stage":
             return stageDesktopUpdate(current, process.platform, args[0], folder);
 
-        case "state": {
-            const update = await readRecord(folder, pendingFile);
-            const last = await readRecord(folder, "last-result.json");
-
-            return recordIsValid(update, current, process.platform)
-                ? { phase: "staged", current, version: update.version }
-                : { phase: "idle", current, last };
-        }
+        case "state":
+            return desktopUpdateState(current, process.platform, folder);
 
         case "handoff":
             return handoff(current, location.app, folder, args[0], args[1]);

@@ -225,6 +225,9 @@ extension AppDelegate {
             let file = action == "local.log" ? logFile : stateFolder.appendingPathComponent(action == "preferences.open" ? "desktop.json" : "diagnostics.log")
             if !FileManager.default.fileExists(atPath: file.path) { reply(.failure(shellError("There is no file to show yet."))); return }
             NSWorkspace.shared.activateFileViewerSelecting([file])
+        case "updates.openDownload", "updates.pickInstaller":
+            handleUpdateOperation(action, data, reply: reply)
+            return
         case "local.inspect", "local.open", "local.stop", "local.restart":
             if action == "local.restart", local?.pid != launcher?.processIdentifier {
                 let alert = NSAlert()

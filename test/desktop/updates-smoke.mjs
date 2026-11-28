@@ -6,14 +6,12 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { setTimeout } from "node:timers/promises";
-import {
-    stageDesktopUpdate,
-    stateFolderName,
-} from "../../packaging/desktop/controller/updates/desktop-updates.mjs";
+import { pathToFileURL } from "node:url";
+import { stateFolderName } from "../../packaging/desktop/controller/updates/desktop-updates.mjs";
 import { installerName } from "../../packaging/desktop/feed/desktop-builds.mjs";
 import { updateFixture } from "./update-fixture.mjs";
 
-const [current, next] = process.argv.slice(2);
+const [current, next, input] = process.argv.slice(2);
 const win = process.platform === "win32";
 
 assert.equal(process.env.GITHUB_ACTIONS, "true");
@@ -36,6 +34,7 @@ const startup = win
     : join(home, "Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist");
 const log = win ? join(install, "launcher.log") : join(home, "Library/Logs/Pi Pocket/launcher.log");
 const settings = join(install, "desktop/desktop.json");
+const webViewLog = join(dirname(settings), "webview2.log");
 const data = join(home, ".pi-pocket");
 const running = join(data, "launcher-running.json");
 const config = join(data, "config.json");
@@ -43,6 +42,14 @@ const savedData = join(data, "desktop-update-test-session.txt");
 const cache = join(install, stateFolderName);
 const proof = join(temp, "desktop-update-proof");
 const origin = "http://127.0.0.1:18787";
+const trace = join(proof, "updates-states.jsonl");
+const openSettings = join(temp, "show-updates-settings");
+const settingsTitle = "Desktop Settings — Pi Pocket";
+const updateLine = "Update ready - restart to apply";
+const entry = join(
+    win ? install : join(app, "Contents/Resources"),
+    "desktop-assets/controller/main.mjs",
+);
 
 function run(command, args, env = process.env) {
     return execFileSync(command, args, {
@@ -136,9 +143,7 @@ function appPid() {
 
 function launchApp() {
     if (win) {
-        const child = spawn(app, [], { stdio: "ignore" });
-
-        child.unref();
+        run(input, ["launch", app]);
     } else {
         run("/usr/bin/open", ["-a", app]);
     }
@@ -152,32 +157,99 @@ function quitApp() {
     }
 }
 
-function screenshot(name, pid) {
+function gui(pid, operation, title, ...args) {
+    return run(input, [String(pid), operation, title, ...args.map(String)]);
+}
+
+async function screenshot(name, pid) {
     const file = join(proof, `${name}.png`);
 
-    if (win) {
-        powershell(
-            `
-            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-            $app = Get-Process -Id ([int]$env:PP_APP_PID)
-            (New-Object -ComObject WScript.Shell).AppActivate($app.Id) | Out-Null
-            Start-Sleep -Seconds 2
-            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-            $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            try {
-                $graphics.CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
-                $bitmap.Save($env:PP_SCREENSHOT, [System.Drawing.Imaging.ImageFormat]::Png)
-            } finally {
-                $graphics.Dispose()
-                $bitmap.Dispose()
-            }
-        `,
-            { ...process.env, PP_APP_PID: String(pid), PP_SCREENSHOT: file },
-        );
-    } else {
-        run("/usr/sbin/screencapture", ["-x", file]);
+    gui(pid, "shot", settingsTitle, file);
+    assert((await stat(file)).size > 4000, `${name} contains a window screenshot`);
+}
+
+async function exerciseUpdates(pid, fixture, downloaded) {
+    async function waitForStatus(phase) {
+        return waitFor(`Updates status ${phase}`, async () => {
+            const lines = (await readFile(trace, "utf8")).trimEnd().split("\n");
+            const snapshot = JSON.parse(lines.at(-1));
+
+            return snapshot.status === phase && snapshot;
+        });
     }
+
+    async function capture(phase, name, latest) {
+        const state = await waitForStatus(phase);
+
+        assert.equal(state.version, current);
+        assert.equal(state.latest, latest);
+        assert.equal(state.updateLine, phase === "staged" ? updateLine : null);
+
+        await setTimeout(350); // Let the real WebView paint the new snapshot before capture.
+        await screenshot(name, pid);
+
+        return state;
+    }
+
+    const click = (x) => gui(pid, "click", settingsTitle, x, 270);
+    const check = () => click(295);
+    const download = () => click(390);
+    const pending = join(cache, "pending.json");
+
+    await writeFile(openSettings, "");
+    gui(pid, "find", settingsTitle);
+
+    if (win) {
+        // The WinForms window can appear before its WebView finishes loading Settings.
+        await waitFor("the bundled Windows Settings page to load", async () =>
+            (await readFile(webViewLog, "utf8")).includes(
+                "The bundled Desktop Settings page loaded.",
+            ),
+        );
+        await capture("idle", "00-not-checked-yet", null);
+    } else {
+        await setTimeout(2500);
+    }
+
+    check();
+    await capture("current", "01-up-to-date", current);
+    fixture.run.run_number = Number(next.split(".").at(-1));
+    fixture.artifact.name = installerName(process.platform, next);
+    check();
+    await capture("available", "02-update-available", next);
+    download();
+    await capture("downloading", "03-downloading", next);
+
+    async function pick(file) {
+        click(590); // Select installer…
+        await waitForStatus("selecting");
+
+        if (win) {
+            gui(pid, "select-file", "Select the downloaded desktop installer", file);
+        } else {
+            await setTimeout(1000);
+            gui(pid, "select-file", settingsTitle, file);
+        }
+    }
+
+    const bad = join(temp, `wrong-${fixture.artifact.name}`);
+
+    await writeFile(bad, "not the selected build");
+    await pick(bad);
+    assert.match((await capture("failed", "04-failed", next)).message, /wrong size/);
+    await assert.rejects(stat(pending), { code: "ENOENT" });
+    check();
+    await waitForStatus("available");
+    download();
+    await waitForStatus("downloading");
+    await pick(downloaded);
+    await capture("ready", "05-ready-to-apply", next);
+    await assert.rejects(stat(pending), { code: "ENOENT" });
+    click(480); // Apply
+    await capture("staged", "06-staged-for-next-start", next);
+    assert.equal((await json(pending)).version, next);
+    assert.equal(appVersion(), current);
+    assert(process.kill(pid, 0), "Apply did not end the desktop app");
 }
 
 async function macSignIns() {
@@ -217,7 +289,11 @@ await writeFile(
     settings,
     JSON.stringify({
         schemaVersion: 1,
-        preferences: { home: { mode: "local" }, window: { closeToTray: false } },
+        preferences: {
+            home: { mode: "local" },
+            updates: { checkAtStartup: false },
+            window: { closeToTray: false },
+        },
     }),
 );
 
@@ -266,39 +342,52 @@ try {
         async () => (await json(running)).pid === server.pid && (await serverInfo()),
     );
     await writeFile(savedData, "saved before desktop-only update\n");
-    const oldPid = await launchAttachedApp(current);
-
-    // Wait for the installed controller to save its normal settings format before comparing bytes.
-    assert.equal((await json(settings)).preferences.window.closeToTray, false);
-    const kept = [runtime, manifest, runtimeFloor, startup, settings, savedData];
-    const before = await Promise.all(kept.map(hash));
-    const configBefore = await savedConfig();
-    const originalServerInfo = await serverInfo();
-
-    screenshot("before", oldPid);
-
     const name = installerName(process.platform, next);
     const bytes = await readFile(join(temp, "desktop-update-next", name));
-    const fixture = await updateFixture(process.platform, next, bytes);
+    const fixture = await updateFixture(process.platform, current, bytes);
+    const downloaded = join(temp, name);
+    const kept = [runtime, manifest, runtimeFloor, startup, settings, savedData];
+    let oldPid, before, configBefore, originalServerInfo;
 
     try {
-        const downloaded = join(temp, name);
         const response = await fetch(`${fixture.url}/installer`, {
             signal: AbortSignal.timeout(30_000),
         });
 
         assert.ok(response.ok);
         await writeFile(downloaded, Buffer.from(await response.arrayBuffer()));
-        const staged = await stageDesktopUpdate(
-            current,
-            process.platform,
-            downloaded,
-            cache,
-            fixture.request,
+
+        // This copy of N runs on the disposable installer runner only. N+1 and every
+        // published installer retain the unmodified controller and its pinned feed.
+        const driver = new URL("./update-fixture.mjs", import.meta.url).href;
+        const original = await readFile(entry, "utf8");
+
+        const anchor = "const beginUpdates = await registerDesktopUpdates(";
+
+        assert(original.includes(anchor), "the installed controller registers updates");
+        const argumentList = [fixture.url, trace, openSettings]
+            .map((value) => JSON.stringify(value))
+            .join(", ");
+        const patched = original.replace(
+            anchor,
+            `installFixtureTransport(${argumentList}, desktop);\n${anchor}`,
         );
 
-        assert.equal(staged.phase, "staged");
-        assert.equal(staged.version, next);
+        await writeFile(
+            entry,
+            `import { installFixtureTransport } from ${JSON.stringify(driver)};\n${patched}`,
+        );
+
+        if (!win) {
+            run("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", app]);
+        }
+
+        oldPid = await launchAttachedApp(current);
+        assert.equal((await json(settings)).preferences.window.closeToTray, false);
+        before = await Promise.all(kept.map(hash));
+        configBefore = await savedConfig();
+        originalServerInfo = await serverInfo();
+        await exerciseUpdates(oldPid, fixture, downloaded);
     } finally {
         fixture.close();
     }
@@ -332,7 +421,10 @@ try {
     assert.deepEqual(await serverInfo(), originalServerInfo);
     assert.deepEqual(await Promise.all(kept.map(hash)), before);
     assert.equal(await savedConfig(), configBefore, "Pi Pocket settings changed");
-    screenshot("after", newPid);
+    assert(
+        !(await readFile(entry, "utf8")).includes("installFixtureTransport"),
+        "the updated app has no fixture transport",
+    );
     const summary =
         `Desktop: ${current} (PID ${oldPid}) → ${next} (PID ${newPid}).\n` +
         `Console server PID ${server.pid} still answers. Its Node runtime, package manifest, install marker, sign-in setting, desktop settings and data did not change. Server settings stayed the same apart from presence timestamps.\n`;
@@ -340,7 +432,16 @@ try {
     await writeFile(join(proof, "result.txt"), summary);
     console.log(summary);
 } catch (error) {
-    for (const file of [log, join(cache, "last-result.json"), join(cache, "setup.log")]) {
+    await writeFile(join(proof, "failure.txt"), `${error.stack}\n${error.stderr ?? ""}`).catch(
+        () => {},
+    );
+
+    for (const file of [
+        log,
+        webViewLog,
+        join(cache, "last-result.json"),
+        join(cache, "setup.log"),
+    ]) {
         const contents = await readFile(file, "utf8").catch(() => null);
 
         if (contents) {

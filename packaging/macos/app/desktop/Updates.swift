@@ -1,4 +1,28 @@
-import Foundation
+import Cocoa
+import UniformTypeIdentifiers
+
+extension AppDelegate {
+    func handleUpdateOperation(_ action: String, _ data: [String: Any], reply: @escaping ShellController.Reply) {
+        if action == "updates.openDownload" {
+            // The controller supplies only the pinned GitHub artifact link. The browser handles sign-in.
+            let url = (data["url"] as? String).flatMap { URL(string: $0) }
+            reply(.success(url.map { NSWorkspace.shared.open($0) } ?? false))
+            return
+        }
+        guard let window = settings?.window else { reply(.success(NSNull())); return }
+        let picker = NSOpenPanel()
+        picker.title = "Select the downloaded desktop installer"
+        picker.canChooseFiles = true
+        picker.canChooseDirectories = false
+        picker.allowsMultipleSelection = false
+        picker.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        if let type = UTType(filenameExtension: "pkg") { picker.allowedContentTypes = [type] }
+        picker.beginSheetModal(for: window) { result in
+            let path = result == .OK ? picker.url?.path : nil
+            reply(.success(path as Any? ?? NSNull()))
+        }
+    }
+}
 
 // Call before launching app-owned processes. The helper waits for this process to exit.
 func takeStagedDesktopUpdate(hidden: Bool) -> Bool {

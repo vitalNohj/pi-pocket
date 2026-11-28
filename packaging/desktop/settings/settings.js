@@ -836,6 +836,94 @@
         );
     }
 
+    function updates() {
+        const latest = element("p");
+        const status = element("p", "", { className: "update-status" });
+        const detail = element("p", "", { className: "muted" });
+        const check = action("Check now", () => run("updates.check"));
+        const download = action("Download", () => run("updates.download"));
+        const apply = action("Apply", () => run("updates.apply"), true);
+        const select = action("Select installer…", () => run("updates.selectInstaller"));
+        const startup = checkbox("Check for app updates at startup", "updates", "checkAtStartup");
+        const labels = {
+            disabled: "App updates are off",
+            unavailable: "No build available",
+            idle: "Not checked yet",
+            checking: "Checking for updates…",
+            current: "Up to date",
+            available: "Update available",
+            opening: "Opening the download link…",
+            downloading: "Downloading in your browser",
+            selecting: "Downloading in your browser",
+            verifying: "Verifying the installer…",
+            ready: "Ready to apply",
+            staging: "Staging the update…",
+            staged: "Update ready - restart to apply",
+            failed: "Update failed",
+        };
+        const instructions = {
+            available: "Download opens GitHub in your browser. This is an unsigned test build.",
+            downloading:
+                "Sign in to GitHub if asked. After the download finishes, select the installer here.",
+            selecting: "Select the installer that you downloaded from GitHub.",
+            verifying: "Checking the size and SHA-256 against the GitHub build.",
+            ready: "The size and SHA-256 match. Apply stages the update without closing Pi Pocket.",
+            staged: "Quit Pi Pocket and open it again to install the update.",
+        };
+        const controls = element("div", "", { className: "actions" });
+        const announcement = element("div");
+
+        announcement.setAttribute("role", "status");
+        announcement.append(status, detail);
+        controls.append(check, download, apply, select);
+        content.append(
+            panel(
+                "Desktop app",
+                element("p", `Current version: ${state.version}`),
+                latest,
+                controls,
+                announcement,
+                startup,
+            ),
+            element(
+                "p",
+                "This updates only the desktop app. The server updates itself from its own menu. This does not update the runner.",
+            ),
+        );
+
+        refresh = () => {
+            const update = state.updates;
+            const phase = update.status;
+            const label = labels[phase];
+            const message = update.message || instructions[phase] || "";
+            const newest = `Newest build: ${update.latest ?? "—"}`;
+            const working = ["checking", "opening", "selecting", "verifying", "staging"].includes(
+                phase,
+            );
+
+            if (latest.textContent !== newest) {
+                latest.textContent = newest;
+            }
+
+            if (status.textContent !== label) {
+                status.textContent = label;
+            }
+
+            if (detail.textContent !== message) {
+                detail.textContent = message;
+            }
+
+            detail.hidden = !message;
+            status.classList.toggle("update-failed", phase === "failed");
+            check.disabled = working || ["disabled", "ready", "staged"].includes(phase);
+            download.disabled = phase !== "available";
+            apply.disabled = phase !== "ready";
+            select.hidden = !["downloading", "selecting", "verifying"].includes(phase);
+            select.disabled = phase !== "downloading";
+            startup.querySelector("input").disabled = phase === "disabled";
+        };
+    }
+
     const coming = () => element("p", "More options are coming soon.", { className: "hint" });
 
     function dictation() {
@@ -961,19 +1049,7 @@
         home,
         server,
         runner: runnerCard,
-        updates: () =>
-            content.append(
-                panel(
-                    "Desktop app",
-                    element("p", `Version ${state.version}`),
-                    checkbox("Check for app updates at startup", "updates", "checkAtStartup", true),
-                    coming(),
-                ),
-                element(
-                    "p",
-                    "The server checks for its own updates in Pi Pocket. The desktop app does not update the server or runner.",
-                ),
-            ),
+        updates,
         dictation,
         window: () => {
             const controls = [

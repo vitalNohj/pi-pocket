@@ -3,8 +3,10 @@ import { MAX_PACKET_BYTES, parseRequest } from "../protocol/index.mjs";
 import { DesktopController } from "./index.mjs";
 import { registerDictation } from "./dictation/index.mjs";
 import { registerRunner } from "./runner/desktop.mjs";
+import { desktopUpdateFolder } from "./updates/desktop-updates.mjs";
+import { registerDesktopUpdates } from "./updates/settings-actions.mjs";
 
-const [folder, platform, version, migration] = process.argv.slice(2);
+const [folder, platform, version, migration, app] = process.argv.slice(2);
 
 if (
     !folder ||
@@ -42,6 +44,22 @@ const root = new URL("./dictation/runtime/", import.meta.url);
 const runner = registerRunner(desktop, folder);
 
 await registerDictation(desktop, { folder, root });
+let updateFolder;
+
+try {
+    if (app && isAbsolute(app)) {
+        updateFolder = desktopUpdateFolder(app);
+    }
+} catch {
+    // An unsupported app location does not stop Settings from opening.
+}
+
+const beginUpdates = await registerDesktopUpdates(desktop, {
+    version,
+    platform: process.platform,
+    folder: updateFolder,
+});
+
 await desktop.load();
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -122,6 +140,7 @@ process.stdin.on("data", (chunk) => {
                                         "The runner could not start. Reopen Pi Pocket and try again.",
                                 });
                             });
+                            beginUpdates();
                             void desktop.begin();
                         }
                     })

@@ -9,6 +9,9 @@ const versionPattern =
 export const installerLimit = 128 * 1024 * 1024;
 export const sha256Pattern = /^[a-f0-9]{64}$/;
 
+// Only fixed messages or validated numbers belong in errors that Settings displays.
+export class DesktopUpdateError extends Error {}
+
 function parseVersion(version) {
     return typeof version === "string" ? versionPattern.exec(version)?.slice(1).map(Number) : null;
 }
@@ -50,7 +53,9 @@ async function githubJson(path) {
     });
 
     if (!response.ok) {
-        throw new Error(`GitHub could not check for desktop builds (HTTP ${response.status}).`);
+        throw new DesktopUpdateError(
+            `GitHub could not check for desktop builds (HTTP ${response.status}).`,
+        );
     }
 
     return response.json();
@@ -82,7 +87,9 @@ export async function checkDesktopUpdate(current, platform, request = githubJson
         run.head_repository?.full_name !== "vitalNohj/pi-pocket" ||
         run.conclusion !== "success"
     ) {
-        throw new Error("GitHub did not return a successful desktop-native push build.");
+        throw new DesktopUpdateError(
+            "GitHub did not return a successful desktop-native push build.",
+        );
     }
 
     const { artifacts } = await request(`${source}/actions/runs/${run.id}/artifacts?per_page=100`);
@@ -113,7 +120,7 @@ export async function checkDesktopUpdate(current, platform, request = githubJson
     const { artifact, version } = matches[0];
 
     if (!isNewerDesktopVersion(version, current)) {
-        return { phase: "current", current };
+        return { phase: "current", current, version };
     }
 
     const sha256 = artifact.digest?.startsWith("sha256:") ? artifact.digest.slice(7) : "";
@@ -124,7 +131,9 @@ export async function checkDesktopUpdate(current, platform, request = githubJson
         !positiveInteger(artifact.size_in_bytes) ||
         artifact.size_in_bytes > installerLimit
     ) {
-        throw new Error("GitHub did not provide a valid desktop installer digest and size.");
+        throw new DesktopUpdateError(
+            "GitHub did not provide a valid desktop installer digest and size.",
+        );
     }
 
     return {

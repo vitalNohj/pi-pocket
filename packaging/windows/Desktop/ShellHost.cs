@@ -40,7 +40,7 @@ namespace PiPocket
             bool fresh = !existing && !File.Exists(Path.Combine(stateFolder, "desktop.json"));
             ProcessStartInfo start = new ProcessStartInfo(Path.Combine(appDir, @"node\node.exe"),
                 Quote(Path.Combine(appDir, @"desktop-assets\controller\main.mjs")) + " " + Quote(stateFolder) +
-                " windows " + Quote(Program.Version) + (existing ? " existing" : " new"));
+                " windows " + Quote(Program.Version) + (existing ? " existing " : " new ") + Quote(Application.ExecutablePath));
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             start.RedirectStandardInput = true;
@@ -199,6 +199,8 @@ namespace PiPocket
                 case "local.open": return await Task.Run(() => OpenLocal());
                 case "local.stop": return await Task.Run(() => StopLocal());
                 case "local.restart": await RestartLocal(); break;
+                case "updates.openDownload": return DesktopUpdates.OpenDownload(ShellWire.Text(data, "url"));
+                case "updates.pickInstaller": return DesktopUpdates.PickInstaller(settings);
                 default: throw new InvalidOperationException("This action is not available yet.");
             }
             return null;
