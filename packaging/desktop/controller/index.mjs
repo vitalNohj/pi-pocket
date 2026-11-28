@@ -19,6 +19,15 @@ import {
     signInOrigin,
 } from "./connection/probe.mjs";
 import { diagnostics } from "./diagnostics/log.mjs";
+import {
+    checkLocalFolders,
+    checkLocalPort,
+    localDefaults,
+    localFolder,
+    localRules,
+    localSettings,
+    sameLocalSettings,
+} from "./local-server/settings.mjs";
 import { patchPreferences, readPreferences, savePreferences } from "./preferences.mjs";
 import {
     importWindowPreferences,
@@ -41,14 +50,16 @@ const pinFeed = (value) =>
 
 function validLocal(data) {
     return (
-        onlyKeys(data, ["status", "owned", "verified", "address", "message"]) &&
+        onlyKeys(data, ["status", "owned", "verified", "address", "message", "settings"]) &&
         localStates.includes(data.status) &&
         typeof data.owned === "boolean" &&
         typeof data.verified === "boolean" &&
         (data.status !== "running"
             ? data.address === undefined
             : Boolean(signInOrigin(data.address))) &&
-        (data.message === undefined || isText(data.message, 1024))
+        (data.message === undefined || isText(data.message, 1024)) &&
+        (data.settings === undefined ||
+            (data.status === "running" && data.owned && localSettings(data.settings)))
     );
 }
 
@@ -91,6 +102,8 @@ export class DesktopController {
 
     constructor({ folder, platform, version, existingInstall, write }) {
         this.#state = initialState(platform, version, existingInstall);
+        this.#state.preferences.server = localDefaults();
+        Object.assign(this.#rules.server, localRules);
         this.#file = join(folder, "desktop.json");
         this.#legacyWindowFile = join(folder, "window.json");
         this.#rules.appearance.material = choice(...materials[platform]);
@@ -135,6 +148,45 @@ export class DesktopController {
         this.registerAction("home.local.open", noData, () => this.#localOpen());
         this.registerAction("home.local.stop", noData, () => this.#localStop());
         this.registerAction("home.local.restart", noData, () => this.#localRestart());
+        this.registerAction("home.local.apply", noData, () => this.#localOpen(true));
+        this.registerHostCommand(
+            "local.inspect",
+            (data) => onlyKeys(data, ["data"]) && localFolder(data.data),
+        );
+        this.registerHostCommand(
+            "local.open",
+            (data) =>
+                onlyKeys(data, ["settings", "replace"]) &&
+                localSettings(data.settings) &&
+                typeof data.replace === "boolean",
+        );
+        const folderKind = (data) =>
+            onlyKeys(data, ["kind", "folder"]) && ["cwd", "data"].includes(data.kind);
+
+        this.registerHostCommand(
+            "local.pickFolder",
+            (data) => folderKind(data) && localFolder(data.folder),
+        );
+        this.registerAction(
+            "server.pickFolder",
+            (data) => folderKind(data) && isText(data.folder, 2048),
+            async ({ kind, folder: draft }) => {
+                const folder = await this.callHost(
+                    "local.pickFolder",
+                    {
+                        kind,
+                        folder: localFolder(draft) ? draft : this.#state.preferences.server[kind],
+                    },
+                    360000,
+                );
+
+                if (folder !== null && !localFolder(folder)) {
+                    throw connectionError("folder", "Choose an absolute folder on this computer.");
+                }
+
+                return folder;
+            },
+        );
     }
 
     async load() {
@@ -180,8 +232,12 @@ export class DesktopController {
             if (mode === "local") {
                 await this.#localOpen();
             } else {
-                void this.callHost("local.inspect")
-                    .then((local) => this.#local(local))
+                void this.callHost("local.inspect", { data: this.#state.preferences.server.data })
+                    .then((local) => {
+                        if (!this.#localOpening) {
+                            this.#local(local);
+                        }
+                    })
                     .catch(() => {});
 
                 if (mode === "remote" && connectAtStartup) {
@@ -563,32 +619,39 @@ export class DesktopController {
 
                 return next;
             },
-            patch?.window &&
-                (async (previous, next) => {
-                    const old = previous.window;
-                    const wanted = next.window;
+            async (previous, next) => {
+                if (patch.server) {
+                    await checkLocalFolders(next.server);
+                }
 
-                    if (old.startHidden && !wanted.startHidden) {
-                        await this.callHost("window.login.prepare");
-                    }
+                if (!patch.window) {
+                    return;
+                }
 
-                    if (
-                        wanted.shortcutEnabled !== old.shortcutEnabled ||
-                        (wanted.shortcutEnabled && wanted.shortcut !== old.shortcut)
-                    ) {
-                        // The OS must accept the candidate before it replaces the saved binding.
-                        await this.callHost("window.shortcut", {
-                            enabled: wanted.shortcutEnabled,
-                            shortcut: wanted.shortcut,
+                const old = previous.window;
+                const wanted = next.window;
+
+                if (old.startHidden && !wanted.startHidden) {
+                    await this.callHost("window.login.prepare");
+                }
+
+                if (
+                    wanted.shortcutEnabled !== old.shortcutEnabled ||
+                    (wanted.shortcutEnabled && wanted.shortcut !== old.shortcut)
+                ) {
+                    // The OS must accept the candidate before it replaces the saved binding.
+                    await this.callHost("window.shortcut", {
+                        enabled: wanted.shortcutEnabled,
+                        shortcut: wanted.shortcut,
+                    });
+
+                    return () =>
+                        this.callHost("window.shortcut", {
+                            enabled: old.shortcutEnabled,
+                            shortcut: old.shortcut,
                         });
-
-                        return () =>
-                            this.callHost("window.shortcut", {
-                                enabled: old.shortcutEnabled,
-                                shortcut: old.shortcut,
-                            });
-                    }
-                }),
+                }
+            },
         );
 
         if (Object.hasOwn(patch, "home")) {
@@ -724,38 +787,70 @@ export class DesktopController {
         return this.#state.home.active;
     }
 
-    async #localOpen() {
+    async #localOpen(replace = false) {
         if (this.#localOpening) {
-            throw connectionError("busy", "Pi Pocket is still starting.");
+            throw connectionError("busy", "Wait for the current local server action to finish.");
         }
 
-        const attempt = this.#switchAttempt();
+        const previous = this.#state.home.local;
+        const settings = this.#state.preferences.server;
+
+        if (
+            replace &&
+            (!previous.owned ||
+                !previous.settings ||
+                sameLocalSettings(settings, previous.settings))
+        ) {
+            throw unavailable();
+        }
+
+        // Applying settings to a background local server must not switch away from a remote page.
+        const attempt =
+            !replace || this.#state.home.active?.mode === "local" ? this.#switchAttempt() : null;
 
         this.#localOpening = true;
-        this.#local({ status: "starting", owned: this.#state.home.local.owned, verified: false });
+        this.#local({ status: "starting", owned: previous.owned, verified: false });
 
         try {
-            const config = await this.callHost("local.open", undefined, 370000);
+            let local = replace
+                ? null
+                : await this.callHost("local.inspect", { data: settings.data });
 
-            if (!this.#local(config) || config.status !== "running") {
+            if (local?.status !== "running") {
+                await checkLocalFolders(settings);
+                await checkLocalPort(settings, replace ? previous.address : null);
+                local = await this.callHost("local.open", { settings, replace }, 390000);
+            }
+
+            if (!this.#local(local) || local.status !== "running") {
+                if (replace && local?.owned === false) {
+                    this.#clearLocalPage();
+                }
+
                 throw connectionError(
                     "local",
-                    config?.message || "Pi Pocket on this computer did not start.",
+                    local?.message || "Pi Pocket on this computer did not start.",
                 );
             }
 
-            return await this.#activate(attempt, "local", config.address, {
-                kind: "pocket",
-                bridge: 1,
-            });
+            if (attempt) {
+                return await this.#activate(attempt, "local", local.address, {
+                    kind: "pocket",
+                    bridge: 1,
+                });
+            }
         } catch (error) {
             if (this.#state.home.local.status === "starting") {
-                this.#local({
-                    status: "error",
-                    owned: false,
-                    verified: false,
-                    message: error.message,
-                });
+                this.#local(
+                    previous.status === "running"
+                        ? previous
+                        : {
+                              status: "error",
+                              owned: false,
+                              verified: false,
+                              message: error.message,
+                          },
+                );
             }
 
             throw error;
@@ -769,12 +864,22 @@ export class DesktopController {
             throw unavailable();
         }
 
-        const local = await this.callHost("local.stop", undefined, 30000);
+        this.#localOpening = true;
 
-        if (!this.#local(local) || local.status !== "stopped") {
-            throw unavailable();
+        try {
+            const local = await this.callHost("local.stop", undefined, 30000);
+
+            if (!this.#local(local) || local.status !== "stopped") {
+                throw unavailable();
+            }
+
+            this.#clearLocalPage();
+        } finally {
+            this.#localOpening = false;
         }
+    }
 
+    #clearLocalPage() {
         if (this.#state.home.active?.mode === "local") {
             this.#state.home.active = null;
             this.#state.window.theme = null;
@@ -790,7 +895,7 @@ export class DesktopController {
     }
 
     #localRestart() {
-        if (!this.#state.home.local.verified) {
+        if (this.#localOpening || !this.#state.home.local.verified) {
             throw unavailable();
         }
 

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { testBridge } from "./bridge-smoke.mjs";
 import { fixture } from "./fixture.mjs";
+import { testLocalServer } from "./local-server-app.mjs";
 
 const windows = process.platform === "win32";
 const [exe, input, out, speechCache] = process.argv.slice(2).map((arg) => resolve(arg));
@@ -260,6 +261,19 @@ try {
     );
 
     await testBridge({ remote, gui, until, prefs, waitForSettings, shot, out, stateFolder });
+    await testLocalServer({
+        gui,
+        until,
+        prefs,
+        shot,
+        stateFolder,
+        data,
+        async relaunch() {
+            await quit();
+            await until("Quit ended the app before relaunch", () => exited(app));
+            app = await start();
+        },
+    });
     await quit();
     await until("Quit ended the app", () => exited(app));
     console.log("The installed app passed the offline Settings and remote Home smoke test.");

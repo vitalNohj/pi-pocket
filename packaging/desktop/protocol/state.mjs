@@ -6,6 +6,9 @@ export const choice =
 export const integer = (min, max) => (value) =>
     Number.isInteger(value) && value >= min && value <= max;
 
+export const localPort = integer(1, 65535);
+export const localAccess = choice("local", "lan", "tailscale", "cloudflare");
+
 export const effects = ["available", "unsupported", "page", "full-screen", "web-view"];
 export const materials = {
     windows: ["acrylic", "mica"],
@@ -82,7 +85,7 @@ export function initialState(platform, version, existingInstall) {
             runner: {},
             updates: { checkAtStartup: true },
             dictation: { anywhere: false },
-            server: {},
+            server: { cwd: "", data: "", port: 8787, access: "local" },
         },
     };
 }
@@ -120,5 +123,5 @@ export const preferenceRules = {
     runner: {},
     updates: { checkAtStartup: boolean },
     dictation: { anywhere: boolean },
-    server: {},
+    server: { port: localPort, access: localAccess },
 };

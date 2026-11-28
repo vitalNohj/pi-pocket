@@ -195,8 +195,9 @@ namespace PiPocket
                 case "preferences.open": await OpenText(Path.Combine(stateFolder, "desktop.json")); break;
                 case "logs.open": await OpenText(Path.Combine(stateFolder, "diagnostics.log")); break;
                 case "local.log": await OpenText(logFile); break;
-                case "local.inspect": return await Task.Run(() => InspectLocal());
-                case "local.open": return await Task.Run(() => OpenLocal());
+                case "local.pickFolder": return PickLocalFolder(data);
+                case "local.inspect": return await Task.Run(() => InspectLocal(ShellWire.Text(data, "data")));
+                case "local.open": return await Task.Run(() => OpenLocal(data));
                 case "local.stop": return await Task.Run(() => StopLocal());
                 case "local.restart": await RestartLocal(); break;
                 case "updates.openDownload": return DesktopUpdates.OpenDownload(ShellWire.Text(data, "url"));

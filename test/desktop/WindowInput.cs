@@ -87,10 +87,17 @@ static class WindowInput
                 case "expect-text": WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3]); break;
                 case "expect-prefix": WaitForNamed(() => WithPrefix(AutomationElement.FromHandle(window), args[3]), args[3]); break;
                 case "press": ClickElement(WaitForNamed(() => Named(AutomationElement.FromHandle(window), args[3]), args[3])); break;
+                case "focus-field": case "focus-choice":
+                    ControlType type = operation == "focus-field" ? ControlType.Edit : ControlType.ComboBox;
+                    ClickElement(WaitForNamed(() => AutomationElement.FromHandle(window).FindFirst(TreeScope.Descendants,
+                        new AndCondition(new PropertyCondition(AutomationElement.NameProperty, args[3]),
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, type))), args[3]));
+                    break;
                 case "shot": Screenshot(window, args[3]); break;
                 case "dictation-menu": DictationMenu(pid, window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
+                case "paste": Clipboard.SetText(args[3]); SendKeys.SendWait("^v"); break;
                 case "type-private":
                     string code = Console.ReadLine();
                     if (code == null || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$"))
@@ -100,6 +107,7 @@ static class WindowInput
                     SendKeys.SendWait(code);
                     break;
                 case "new": SendKeys.SendWait("^n"); break;
+                case "settings": SendKeys.SendWait("^,"); break;
                 case "chooseNext": SendKeys.SendWait("{DOWN}{ENTER}"); break;
                 case "selectAll": SendKeys.SendWait("^a"); break;
                 case "select-file":

@@ -260,7 +260,6 @@ namespace PiPocket
     sealed partial class TrayApp : ApplicationContext
     {
         readonly string appDir = Path.GetDirectoryName(Application.ExecutablePath);
-        readonly string dataDir;
         readonly string logFile;
         readonly object logLock = new object();
         readonly NotifyIcon tray = new NotifyIcon();
@@ -287,10 +286,6 @@ namespace PiPocket
 
         public TrayApp(bool hidden, bool login, EventWaitHandle newEvent)
         {
-            string data = Environment.GetEnvironmentVariable("PI_POCKET_DIR");
-            dataDir = string.IsNullOrEmpty(data)
-                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".pi-pocket")
-                : Path.GetFullPath(data);
             logFile = Path.Combine(appDir, "launcher.log");
             loginLaunch = login && !hidden;
             openWhenReady = !hidden && !login;
@@ -439,7 +434,7 @@ namespace PiPocket
             return null;
         }
 
-        void StartLauncher()
+        void StartLauncher(LocalLaunch wanted)
         {
             string node = Path.Combine(appDir, @"node\node.exe");
             string script = Path.Combine(appDir, @"app\node_modules\pi-pocket\bin\pi-pocket.js");
@@ -449,7 +444,9 @@ namespace PiPocket
                 throw new FileNotFoundException("Pi Pocket is not fully installed. Run Setup again.", script);
             }
 
-            ProcessStartInfo start = new ProcessStartInfo(node, Quote(script) + " --desktop --data " + Quote(dataDir));
+            ProcessStartInfo start = new ProcessStartInfo(node, Quote(script) + " --desktop --data " + Quote(wanted.Data) +
+                " --cwd " + Quote(wanted.Folder) + " --port " + wanted.Port.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                " --access " + Quote(wanted.Access));
             start.UseShellExecute = false;
             start.CreateNoWindow = true;
             start.RedirectStandardInput = true;
@@ -465,29 +462,29 @@ namespace PiPocket
             start.EnvironmentVariables["PATH"] = Path.Combine(appDir, "node") + ";" + Path.Combine(appDir, "app") + ";" +
                 start.EnvironmentVariables["PATH"];
 
-            launcher = new Process();
-            launcher.StartInfo = start;
-            launcher.EnableRaisingEvents = true;
-            launcher.OutputDataReceived += delegate (object sender, DataReceivedEventArgs e)
+            var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            process.OutputDataReceived += delegate (object sender, DataReceivedEventArgs e)
             {
                 if (e.Data != null)
                 {
                     Log(e.Data);
                 }
             };
-            launcher.ErrorDataReceived += delegate (object sender, DataReceivedEventArgs e)
+            process.ErrorDataReceived += delegate (object sender, DataReceivedEventArgs e)
             {
                 if (e.Data != null)
                 {
                     Log(e.Data);
                 }
             };
-            launcher.Exited += delegate (object sender, EventArgs args)
+            process.Exited += delegate (object sender, EventArgs args)
             {
                 Process ended = (Process)sender;
                 OnUi(delegate { LauncherExited(ended); });
             };
-            launcher.Start();
+            process.Start();
+            launcher = process;
+            launcherSettings = wanted;
             // At once, before the launcher starts the server: the server and every command that it runs join the job.
             AddToJob(launcher);
             launcher.BeginOutputReadLine();
@@ -634,7 +631,7 @@ namespace PiPocket
                 made.ShowWindow();
                 await made.Initialize(SessionWebProfile);
                 if (quitting || made.IsDisposed || generation != pageGeneration) { return; }
-                string target = localPage ? await Task.Run(() => LocalSignInAddress(url, localPid)) : pageAddress;
+                string target = localPage ? await Task.Run(() => LocalSignInAddress(url)) : pageAddress;
                 if (!quitting && !made.IsDisposed && generation == pageGeneration) { made.Browser.Navigate(target); }
             }
             catch (WebView2RuntimeNotFoundException)
@@ -948,10 +945,10 @@ namespace PiPocket
             }
         }
 
-        string OwnerToken()
+        string OwnerToken(string data)
         {
             Dictionary<string, object> config = new JavaScriptSerializer()
-                .Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(dataDir, "config.json")));
+                .Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(data, "config.json")));
             object token;
 
             if (!config.TryGetValue("ownerToken", out token) || !(token is string))

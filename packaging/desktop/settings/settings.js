@@ -31,7 +31,7 @@
             const timer = setTimeout(() => {
                 pending.delete(next);
                 reject(new Error("Pi Pocket did not complete the action in time."));
-            }, 375000);
+            }, 405000);
 
             pending.set(next, { resolve, reject, timer });
 
@@ -304,6 +304,26 @@
         );
     }
 
+    function localSettingsPending() {
+        const applied = state.home.local.settings;
+
+        return (
+            applied &&
+            Object.entries(state.preferences.server).some(([key, value]) => applied[key] !== value)
+        );
+    }
+
+    async function applyLocalSettings() {
+        if (
+            await confirm(
+                "Restart with the saved server settings?",
+                "Work on this server will pause. If you chose a different data folder, the app will use that folder without moving any existing data.",
+            )
+        ) {
+            await run("home.local.apply", undefined, true);
+        }
+    }
+
     function localPanel() {
         const status = element("p", "", { className: "muted" });
         const details = element("p", "", { className: "address" });
@@ -323,7 +343,11 @@
                 await run("home.local.stop", undefined, true);
             }
         });
-        const restart = action("Restart", () => run("home.local.restart", undefined, true));
+        const restart = action("Restart", () =>
+            localSettingsPending()
+                ? applyLocalSettings()
+                : run("home.local.restart", undefined, true),
+        );
 
         status.setAttribute("role", "status");
         controls.append(
@@ -331,6 +355,7 @@
             stop,
             restart,
             action("Show server log", () => run("local.log")),
+            action("Local server settings", () => showSection("server")),
         );
 
         refresh = () => {
@@ -351,7 +376,10 @@
             start.textContent = local.status === "running" ? "Open Pi Pocket" : "Start Pi Pocket";
             start.disabled = busy || local.status === "starting";
             stop.hidden = !local.owned || local.status !== "running";
-            restart.hidden = !local.verified;
+            const pending = localSettingsPending();
+
+            restart.textContent = pending ? "Restart to apply" : "Restart";
+            restart.hidden = !local.verified && !pending;
             stop.disabled = restart.disabled = busy;
         };
 
@@ -552,27 +580,192 @@
         content.append(choices, card === "local" ? localPanel() : remotePanel(), tiles);
     }
 
-    function server() {
+    function localServerSettings() {
+        const port = element("input", "", {
+            type: "text",
+            inputMode: "numeric",
+            maxLength: 6,
+            value: state.preferences.server.port,
+        });
+        const exposure = options(
+            [
+                ["local", "This device only"],
+                ["lan", "Local network"],
+                ["tailscale", "Tailscale"],
+                ["cloudflare", "Cloudflare Tunnel"],
+            ],
+            state.preferences.server.access,
+        );
+        const scope = element("p", "", { className: "hint" });
+        const status = element("p", "", { className: "muted" });
+        const pickers = [];
+
+        const folder = (key, label, buttonLabel) => {
+            const input = element("input", "", {
+                type: "text",
+                spellcheck: false,
+                maxLength: 2048,
+                value: state.preferences.server[key],
+            });
+            const pick = action(buttonLabel, async () => {
+                if (busy) {
+                    return;
+                }
+
+                sayError();
+                busy = true;
+                refresh();
+
+                try {
+                    const chosen = await api.action("server.pickFolder", {
+                        kind: key,
+                        folder: input.value,
+                    });
+
+                    if (chosen !== null) {
+                        input.value = chosen;
+                    }
+                } catch (error) {
+                    sayError(error.message);
+                } finally {
+                    busy = false;
+                    refresh();
+                }
+            });
+
+            input.oninput = () => refresh();
+            pickers.push(pick);
+
+            return { input, label: field(label, input), pick };
+        };
+
+        const sessionFolder = folder("cwd", "Default session folder", "Choose session folder…");
+        const dataFolder = folder("data", "Data folder", "Choose data folder…");
+        const draft = () => ({
+            cwd: sessionFolder.input.value,
+            data: dataFolder.input.value,
+            port: /^\d{1,5}$/.test(port.value) ? Number(port.value) : NaN,
+            access: exposure.value,
+        });
+        const save = action(
+            "Save local settings",
+            async () => {
+                if (busy) {
+                    return;
+                }
+
+                sayError();
+
+                const settings = draft();
+
+                if (
+                    !Number.isInteger(settings.port) ||
+                    settings.port < 1 ||
+                    settings.port > 65535
+                ) {
+                    sayError("Enter a whole port number between 1 and 65535.");
+                    port.focus();
+
+                    return;
+                }
+
+                busy = true;
+                refresh();
+
+                try {
+                    applyState(await api.patchPreferences({ server: settings }));
+                } catch (error) {
+                    sayError(error.message);
+                } finally {
+                    busy = false;
+                    refresh();
+                }
+            },
+            true,
+        );
+        const restart = action("Restart to apply", applyLocalSettings, true);
+        const actions = element("div", "", { className: "actions" });
+        const folderActions = element("div", "", { className: "actions" });
+
+        folderActions.append(sessionFolder.pick, dataFolder.pick);
+        actions.append(
+            save,
+            restart,
+            action("Go to Home", () => showSection("home")),
+            action("Show server log", () => run("local.log")),
+        );
+        status.setAttribute("role", "status");
+        port.oninput = exposure.onchange = () => refresh();
+
+        refresh = () => {
+            const local = state.home.local;
+            const dirty = Object.entries(draft()).some(
+                ([key, value]) => state.preferences.server[key] !== value,
+            );
+            const locked = busy || local.status === "starting";
+
+            scope.textContent = {
+                local: "Only this computer can connect.",
+                lan: "Devices on your network can reach this server over HTTP.",
+                tailscale:
+                    "Devices on your tailnet can reach this server. Tailscale must be connected on this computer.",
+                cloudflare:
+                    "The tunnel gives your server a public HTTPS address. Install cloudflared first. Check the tunnel in Pi Pocket → Access.",
+            }[exposure.value];
+            status.textContent =
+                local.status === "starting"
+                    ? "Starting Pi Pocket…"
+                    : local.status === "running" && !local.owned
+                      ? "Another launcher owns this server. Saved settings apply only when this app starts its own server."
+                      : localSettingsPending()
+                        ? "Restart the server to use the saved settings."
+                        : local.message ||
+                          (local.status === "running"
+                              ? `Running at ${local.address}`
+                              : "Saved settings take effect the next time this app starts the server.");
+            save.disabled = locked || !dirty;
+            restart.hidden = !localSettingsPending();
+            restart.disabled = locked || dirty;
+
+            for (const control of [
+                port,
+                exposure,
+                sessionFolder.input,
+                dataFolder.input,
+                ...pickers,
+            ]) {
+                control.disabled = locked;
+            }
+        };
+
         content.append(
-            element(
-                "p",
-                card === "local" ? "Settings for This computer" : "Settings for Another server",
+            panel(
+                "Local server",
+                sessionFolder.label,
+                dataFolder.label,
+                folderActions,
+                element(
+                    "p",
+                    "Changing the data folder does not move your sessions or server settings.",
+                    { className: "hint" },
+                ),
+                field("Port", port),
+                field("Who can connect", exposure),
+                scope,
+                status,
+                actions,
+                element("p", "Use Pi Pocket’s own menu to update the server.", {
+                    className: "hint",
+                }),
             ),
         );
+    }
 
+    function server() {
         if (card === "local") {
-            content.append(
-                panel(
-                    "Local server",
-                    element(
-                        "p",
-                        "Use Pi Pocket's own menu to update the server. More local server settings are coming soon.",
-                    ),
-                    action("Show server log", () => run("local.log")),
-                    action("Go to Home", () => showSection("home")),
-                ),
-            );
+            localServerSettings();
         } else {
+            content.append(element("p", "Settings for Another server"));
             const origins = element("textarea", "", {
                 rows: 3,
                 value: state.preferences.home.allowedOrigins.join("\n"),
