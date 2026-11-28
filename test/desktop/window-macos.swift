@@ -73,17 +73,23 @@ func axElement(_ value: CFTypeRef?) -> AXUIElement? {
     return (value as! AXUIElement)
 }
 
-func button(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> Bool {
+func clickable(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> Bool {
+    func hasLabel(_ element: AXUIElement) -> Bool {
+        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
+            axAttribute(element, $0) as? String == name
+        }
+    }
     var hit: AXUIElement?
     guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else { return false }
     var named = false
     for _ in 0..<8 {
         guard let element = hit else { return false }
-        named = named || [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
-            axAttribute(element, $0) as? String == name
-        }
-        if axAttribute(element, kAXRoleAttribute) as? String == kAXButtonRole {
-            guard named, axAttribute(element, kAXEnabledAttribute) as? Bool == true,
+        named = named || hasLabel(element)
+        let role = axAttribute(element, kAXRoleAttribute) as? String
+        if role == kAXButtonRole || role == "AXLink" {
+            let enabled = (axAttribute(element, kAXEnabledAttribute) as? Bool) ?? (role == "AXLink")
+            let children = axAttribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+            guard enabled, named || children.contains(where: hasLabel),
                 let owner = axElement(axAttribute(element, kAXWindowAttribute)) ??
                     axElement(axAttribute(element, kAXTopLevelUIElementAttribute)) else { return false }
             return CFEqual(owner, window)
@@ -103,12 +109,12 @@ func clickVerified(_ point: CGPoint, name: String) {
     _ = AXUIElementSetMessagingTimeout(app, 0.5)
     let start = ProcessInfo.processInfo.systemUptime
 
-    // A Save sheet may be offscreen before WebKit's window takes input again. Poll observations, then click once.
+    // Finder or a Save sheet can leave WebKit without focus. Poll observations, then click once.
     while ProcessInfo.processInfo.systemUptime - start < 8 {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
             let window = axElement(axAttribute(app, kAXFocusedWindowAttribute)),
             axAttribute(window, kAXRoleAttribute) as? String == kAXWindowRole,
-            button(at: point, named: name, in: app, window: window) {
+            clickable(at: point, named: name, in: app, window: window) {
             click(point, source: source)
             print("Window fixture: verified and clicked \(name).")
             return

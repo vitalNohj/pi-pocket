@@ -118,7 +118,8 @@ for chrome in system seamless; do
         shot download
 
         before_save="$(drive window-ids)"
-        drive click 752 212
+        # The direct download opens Finder. Confirm the page can receive the next click.
+        bounded 12 "$driver" "$pid" click-verified 752 212 'Save dialog'
         wait_for 'open the Save sheet' 12 drive save-open "$before_save"
         shot save-dialog
         if ! drive escape || ! wait_until 4 drive save-closed "$before_save"; then
