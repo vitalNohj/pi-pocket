@@ -4,6 +4,7 @@ import {
     context,
     newSession,
     openApp,
+    owner,
     root,
     say,
     scriptedModel,
@@ -14,7 +15,13 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { type ConversationId, UserEntry } from "@earendil-works/pi-durable";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import {
+    AssistantEntry,
+    type ConversationId,
+    ToolResultEntry,
+    UserEntry,
+} from "@earendil-works/pi-durable";
 import type { App } from "./helpers.ts";
 import { Browsers } from "../src/server/browser.ts";
 import { findBrowser } from "../src/server/browser/discovery.ts";
@@ -74,6 +81,10 @@ before(async () => {
         restart: () => {},
     });
     const source = readFileSync(join(import.meta.dirname, "../web/app.js"), "utf8");
+    const ui = readFileSync(join(import.meta.dirname, "../web/ui.js"), "utf8").replace(
+        /function renderParts\([^\n]+\) \{/,
+        "$& globalThis.openProbe?.builds.push(text);",
+    );
     // Installed before the app's first render on every document. Disable idle read-ahead so the device-only switch
     // really is device-only, not accidentally warmed into tab memory while the test waits.
     const probe = `
@@ -81,8 +92,28 @@ before(async () => {
 
         globalThis.requestIdleCallback = (callback, options) => options?.timeout === 1000 ? 0 : idle(callback, options);
         // Poll without importing modules while the browser is still loading a new document's import map.
-        globalThis.openProbe = { boot: false, rows: false, state: () => store.state };
+        globalThis.openProbe = { boot: false, rows: false, state: () => store.state, builds: [], first: null };
+        const watched = new WeakSet();
         new MutationObserver(() => {
+            const transcript = document.querySelector('[data-part="transcript"]');
+            const box = transcript?.parentElement;
+
+            if (box && !watched.has(box)) {
+                watched.add(box);
+                // Observe after the app attaches its own layout observer; both callbacks run before paint.
+                const observer = new ResizeObserver(([change]) => {
+                    if (change.contentRect.height > 0 && transcript.querySelector('[id^="entry-"]')) {
+                        observer.disconnect();
+                        const top = box.scrollTop;
+                        const height = box.scrollHeight;
+                        const client = box.clientHeight;
+                        openProbe.first = { top, height, client, gap: height - client - top };
+                    }
+                });
+                observer.observe(box);
+                observer.observe(transcript);
+            }
+
             if ([...document.querySelectorAll('[data-part="prompt-row"]')].some((node) => node.getClientRects().length > 0)) {
                 openProbe.rows = true;
             }
@@ -107,18 +138,30 @@ before(async () => {
             }
         }
 
+        if (path.startsWith("/api/c/") && request.url?.endsWith("/file?path=near-rows-late.svg")) {
+            response.writeHead(200, {
+                "content-type": "image/svg+xml",
+                "cache-control": "no-store",
+            });
+            response.end(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="300"><rect width="220" height="300" fill="navy"/></svg>',
+            );
+
+            return;
+        }
+
         if (failModule && path === "/text-hash.js") {
             response.writeHead(403).end();
 
             return;
         }
 
-        if (path === "/app.js") {
+        if (path === "/app.js" || path === "/ui.js") {
             response.writeHead(200, {
                 "content-type": "text/javascript",
                 "cache-control": "no-store",
             });
-            response.end(probe + source);
+            response.end(path === "/app.js" ? probe + source : ui);
 
             return;
         }
@@ -317,6 +360,343 @@ test(
                 `return JSON.stringify(![...document.querySelectorAll('.boot:not(.inline)')].some((node) => node.getClientRects().length > 0))`,
             ),
             true,
+        );
+    },
+);
+
+test(
+    "a device reopen builds unchanged Markdown once, before and after sign-in checks",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const prompt = "device draw count: **keep this formatting**";
+        const reply = `echo: ${prompt}`;
+        const builds = () =>
+            inPage<number>(`
+        return JSON.stringify(openProbe.builds.filter((text) => text === ${JSON.stringify(reply)}).length);
+    `);
+
+        await say(app, id, prompt);
+        await openOn(id, "device draw count");
+        await saved(id);
+        const me = hold("/api/me");
+
+        try {
+            await page.reload();
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify([...document.querySelectorAll('.md strong')].some(
+                (node) => node.textContent === 'keep this formatting' && !node.closest('[hidden]')));
+        `),
+                "formatted device reply",
+            );
+            assert.ok(me.entered);
+            assert.equal(await builds(), 1);
+        } finally {
+            me.release();
+        }
+
+        await ready();
+        await inPage(
+            `await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))); return 'null';`,
+        );
+        assert.equal(
+            await builds(),
+            1,
+            "listing browser extensions does not rebuild the same reply",
+        );
+    },
+);
+
+test(
+    "Markdown cached for the transcript is invalidated by theme and access changes",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const prompt = "Markdown scope: **a kept reply**";
+        const builds = () =>
+            inPage<number>(
+                `return JSON.stringify(openProbe.builds.filter((text) => text === ${JSON.stringify(`echo: ${prompt}`)}).length);`,
+            );
+
+        await say(app, id, prompt);
+        await openOn(id, "Markdown scope:");
+        await synced(id);
+        const before = await builds();
+
+        assert.ok(before > 0);
+
+        const change = (code: string) => inPage(`${code}; return 'null';`);
+
+        await change(`const { setPrefs, prefs } = await import('/theme.js');
+        window.oldColor = prefs().theme;
+        setPrefs({ theme: prefs().theme === 'gruvbox' ? 'tokyo-night' : 'gruvbox' })`);
+
+        try {
+            await until(
+                async () => (await builds()) === before + 1,
+                "new colors invalidate cached HTML",
+            );
+            await change(`const { store } = await import('/store.js');
+            window.oldReader = store.state.me;
+            store.set({ me: { ...window.oldReader, sessions: [${Number(id)}] } })`);
+            await until(
+                async () => (await builds()) === before + 2,
+                "changed access invalidates cached HTML",
+            );
+            await change(`(await import('/store.js')).store.set({ me: window.oldReader })`);
+            await until(
+                async () => (await builds()) === before + 3,
+                "old access does not reuse retained HTML",
+            );
+            assert.equal(
+                await inPage(
+                    `return JSON.stringify(document.querySelector('.reply strong')?.textContent);`,
+                ),
+                "a kept reply",
+            );
+        } finally {
+            await change(`if (window.oldReader) (await import('/store.js')).store.set({ me: window.oldReader });
+            (await import('/theme.js')).setPrefs({ theme: window.oldColor })`);
+        }
+    },
+);
+
+test(
+    "the first layout preserves bottom placement and the reading position on switch, reload and device return",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const other = await newSession(app);
+        const phrase = "Placement fixture row";
+
+        type Position = { top: number; gap: number; height: number; client: number };
+
+        const position = () =>
+            inPage<Position>(`
+            const box = document.querySelector('.pane > .scroller');
+            const top = box.scrollTop;
+            const height = box.scrollHeight;
+            const client = box.clientHeight;
+            return JSON.stringify({ top, height, client, gap: height - client - top });
+        `);
+
+        const first = async () => {
+            await until(
+                () => inPage<boolean>(`return JSON.stringify(openProbe.first !== null);`),
+                "first layout",
+            );
+
+            return inPage<Position>(`return JSON.stringify(openProbe.first);`);
+        };
+
+        const closeTo = (actual: number, expected: number, why: string) =>
+            assert.ok(Math.abs(actual - expected) <= 2, `${why}: ${actual}, expected ${expected}`);
+
+        const to = async (conversation: ConversationId) => {
+            await inPage(
+                `openProbe.first = null; (await import('/store.js')).navigate(${Number(conversation)}); return 'null';`,
+            );
+        };
+
+        await app.harness.commit(async (tx) => {
+            for (let n = 0; n < 48; n++) {
+                await tx.appendEntry(UserEntry, id, {
+                    model: [
+                        {
+                            role: "user",
+                            content: `${phrase} ${n} ${"line of text ".repeat((n % 5) * 13)}`,
+                            timestamp: Date.now(),
+                        },
+                    ],
+                });
+            }
+        }, context);
+        await say(app, other, "The other placement fixture");
+        await inPage(`(await import('/theme.js')).setPrefs({ motion: 'reduced' }); return 'null';`);
+        await openOn(id, `${phrase} 47`);
+        closeTo((await first()).gap, 0, "bottom in the first layout");
+        await to(other);
+        await until(
+            async () => (await shown("The other placement fixture")).rows,
+            "the other session",
+        );
+        await to(id);
+        await until(async () => (await shown(`${phrase} 47`)).rows, "warm return");
+        closeTo((await first()).gap, 0, "bottom on the warm return");
+
+        await inPage(`
+        const box = document.querySelector('.pane > .scroller');
+        box.scrollTop -= 680;
+        box.dispatchEvent(new Event('scroll'));
+        return 'null';
+    `);
+        const reading = await position();
+
+        assert.ok(reading.top > 0 && reading.gap >= 650, "clearly neither end");
+        await to(other);
+        await until(
+            async () => (await shown("The other placement fixture")).rows,
+            "the other session again",
+        );
+        await to(id);
+        await until(
+            async () => (await shown(`${phrase} 47`)).rows,
+            "warm return to the reading position",
+        );
+
+        const checkRestore = (box: Position, why: string) => {
+            // The previous placement clamps scrollHeight - keep; composer and loader height can vary by frame.
+            const keep = reading.height - reading.top;
+
+            closeTo(
+                box.top,
+                Math.max(0, Math.min(box.height - box.client, box.height - keep)),
+                why,
+            );
+        };
+
+        checkRestore(await first(), "warm return's first layout");
+        checkRestore(await position(), "warm return's settled layout");
+        await until(
+            () =>
+                inPage<boolean>(`
+                const { viewSynced, store } = await import('/store.js');
+                return JSON.stringify(viewSynced(${Number(id)}) && ![...store.state.view.entries.values()].some((entry) => entry.partial));
+            `),
+            "the whole view after the warm return",
+        );
+        await to(other);
+        await until(
+            () =>
+                inPage<boolean>(`
+        const saved = await (await import('/session-cache.js')).read(${Number(id)});
+        return JSON.stringify(saved?.record.place?.keep > 650);
+    `),
+            "the persisted reading position",
+        );
+
+        for (const reload of [false, true]) {
+            const me = hold("/api/me");
+
+            try {
+                if (reload) {
+                    await page.reload();
+                } else {
+                    await page.navigate(`${base}/s/${id}`);
+                }
+
+                await until(
+                    async () => (await shown(`${phrase} 47`)).rows,
+                    "device rows before sign-in checks",
+                );
+                assert.ok(me.entered);
+                checkRestore(await first(), "reading position in the first device layout");
+            } finally {
+                me.release();
+            }
+
+            await ready();
+            checkRestore(await position(), "settled device reading position");
+        }
+    },
+);
+
+test(
+    "a tool builds its body on open; closed output is absent from browser and session Find",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const command = "printf searchable-tool-command";
+        const output = "unique closed tool body output";
+
+        await app.harness.commit(async (tx) => {
+            await tx.appendEntry(UserEntry, id, {
+                model: [{ role: "user", content: "Tool details fixture", timestamp: Date.now() }],
+            });
+            await tx.appendEntry(AssistantEntry, id, {
+                model: [
+                    fauxAssistantMessage([fauxToolCall("bash", { command }, { id: "draw-tool" })], {
+                        stopReason: "toolUse",
+                    }),
+                ],
+            });
+            await tx.appendEntry(ToolResultEntry, id, {
+                model: [
+                    {
+                        role: "toolResult",
+                        toolName: "bash",
+                        toolCallId: "draw-tool",
+                        content: [fauxText(output)],
+                        isError: false,
+                        timestamp: Date.now(),
+                    },
+                ],
+                data: { diagnostics: [] },
+            });
+        }, context);
+        await openOn(id, "Tool details fixture");
+        await until(
+            () =>
+                inPage<boolean>(`
+        return JSON.stringify(document.querySelector('[data-part="tool-call"] button[aria-expanded="false"]') !== null);
+    `),
+            "closed tool card",
+        );
+        const state = await inPage<{ closed: boolean; notFound: boolean; inFrame: boolean }>(`
+        const tool = document.querySelector('[data-part="tool-call"]');
+        const output = ${JSON.stringify(output)};
+        const closed = !tool.querySelector('.step-body');
+        const notFound = !window.find(output);
+        tool.querySelector('button[aria-expanded="false"]').click();
+        // Microtasks, not a timer or idle turn; the next frame can draw the output.
+        await Promise.resolve();
+        const inFrame = tool.querySelector('.step-body')?.textContent.includes(output) ?? false;
+        return JSON.stringify({ closed, notFound, inFrame });
+    `);
+
+        assert.deepEqual(state, { closed: true, notFound: true, inFrame: true });
+        await until(
+            () =>
+                inPage<boolean>(`
+            return JSON.stringify(window.find(${JSON.stringify(output)}, false, false, true));
+        `),
+            "browser Find sees the expanded output",
+        );
+        await inPage(
+            `document.querySelector('[data-part="tool-call"] button[aria-expanded="true"]').click(); return 'null';`,
+        );
+
+        const find = (query: string) =>
+            inPage(`
+        const { openSheet } = await import('/store.js');
+        openSheet({ type: 'find', query: ${JSON.stringify(query)} });
+        return 'null';
+    `);
+        const sheetSays = (text: string) =>
+            inPage<boolean>(`
+        return JSON.stringify(document.querySelector('[role="dialog"]')?.textContent.includes(${JSON.stringify(text)}) ?? false);
+    `);
+
+        await find(output);
+        await until(() => sheetSays("Nothing here says"), "no session Find result for tool output");
+        await inPage(`(await import('/store.js')).closeSheet(); return 'null';`);
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(!document.querySelector('[data-sheet="find"]'));`,
+                ),
+            "closed Find sheet",
+        );
+        await find(command);
+        await until(
+            () =>
+                inPage<boolean>(`
+                return JSON.stringify([...document.querySelectorAll('.find-result')].some(
+                    (node) => node.textContent.includes('searchable-tool-command')));
+            `),
+            "session Find still searches the tool command",
         );
     },
 );
@@ -520,6 +900,571 @@ function changeBuild() {
 
     return { build, restore: () => Reflect.deleteProperty(app, "build") };
 }
+
+const nearLabel = "Draw only rows near the screen (experimental)";
+
+function experimental(on: boolean) {
+    return inPage(
+        `(await import('/theme.js')).setPrefs({ nearRows: ${on}, motion: 'reduced' }); return 'null';`,
+    );
+}
+
+async function nearFixture(withLateContent = false, conversation?: ConversationId) {
+    const id = conversation ?? (await newSession(app));
+    const ids: number[] = [];
+    const word = (n: number) => `Near rows specimen ${String(n).padStart(2, "0")}.`;
+    const lesson = withLateContent
+        ? await app.memory.add(
+              id,
+              undefined,
+              { userId: owner(app).id, byPi: true, name: "Pi" },
+              { text: "Keep an example lesson with the near rows fixture.", scope: "session" },
+          )
+        : null;
+
+    await app.harness.commit(async (tx) => {
+        for (let n = 0; n < 55; n++) {
+            const row = await tx.appendEntry(UserEntry, id, {
+                model: [
+                    {
+                        role: "user",
+                        content: `${word(n)} ${"words here ".repeat(15 + (n % 5) * 8)}`,
+                        timestamp: Date.now(),
+                    },
+                ],
+            });
+
+            ids.push(Number(row.id));
+
+            if (n === 48 && lesson) {
+                await tx.appendEntry(AssistantEntry, id, {
+                    model: [
+                        fauxAssistantMessage([
+                            fauxText(
+                                `![Late image](/api/c/${id}/file?path=near-rows-late.svg)\n\n` +
+                                    String.raw`A late expression: $\dfrac{1}{\dfrac{1}{x} + \dfrac{1}{y}}$.`,
+                            ),
+                        ]),
+                    ],
+                });
+            }
+
+            if (n === 53 && lesson) {
+                await tx.appendEntry(AssistantEntry, id, {
+                    model: [
+                        fauxAssistantMessage(
+                            [
+                                fauxToolCall(
+                                    "memory",
+                                    { action: "add", text: lesson.text },
+                                    { id: "near-lesson" },
+                                ),
+                            ],
+                            { stopReason: "toolUse" },
+                        ),
+                    ],
+                });
+                await tx.appendEntry(ToolResultEntry, id, {
+                    model: [
+                        {
+                            role: "toolResult",
+                            toolName: "memory",
+                            toolCallId: "near-lesson",
+                            content: [fauxText("Saved")],
+                            details: { lesson: lesson.id },
+                            isError: false,
+                            timestamp: Date.now(),
+                        },
+                    ],
+                    data: { diagnostics: [] },
+                });
+            }
+        }
+    }, context);
+
+    return { id, ids, word, last: word(ids.length - 1), lesson };
+}
+
+const scrollerState = () =>
+    inPage<{ gap: number; count: number; spacer: boolean; row: string; offset: number }>(`
+    const box = document.querySelector('.pane > .scroller');
+    const rows = [...box.querySelectorAll('.transcript > [id^="entry-"]')];
+    const top = box.getBoundingClientRect().top;
+    const first = rows.find((row) => row.getBoundingClientRect().bottom > top + 2);
+    return JSON.stringify({
+        gap: box.scrollHeight - box.clientHeight - box.scrollTop,
+        count: rows.length, spacer: !!box.querySelector('.near-gap[aria-hidden="true"]'),
+        row: first?.id ?? '', offset: first?.getBoundingClientRect().top - top
+    });
+`);
+
+const twoFrames = () =>
+    inPage(`
+    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+    return 'null';
+`);
+
+async function synced(id: ConversationId) {
+    await until(
+        () =>
+            inPage<boolean>(`
+        const { store, viewSynced } = await import('/store.js');
+        return JSON.stringify(viewSynced(${Number(id)}) && ![...store.state.view.entries.values()].some((entry) => entry.partial));
+    `),
+        "the whole session view",
+    );
+}
+
+const go = (id: ConversationId) =>
+    inPage(
+        `openProbe.first = null; (await import('/store.js')).navigate(${Number(id)}); return 'null';`,
+    );
+
+const readAboveBottom = () =>
+    inPage(`
+    const box = document.querySelector('.pane > .scroller');
+    box.scrollTop -= 210;
+    box.dispatchEvent(new Event('scroll'));
+    return 'null';
+`);
+
+test(
+    "near rows opens at the same place as the full transcript, also on switch and device reopen",
+    real,
+    async () => {
+        const { id, ids, last } = await nearFixture();
+        const other = await newSession(app);
+        const label = JSON.stringify(nearLabel);
+        const shape = () =>
+            inPage<string[][]>(`
+                const box = document.querySelector('.pane > .scroller');
+                return JSON.stringify([[...box.getAttributeNames()].sort(),
+                    ...[...box.querySelector('.transcript').children].map((row) =>
+                        [row.localName, row.id, row.dataset.part ?? ''])]);
+            `);
+        const toggle = () =>
+            inPage(`
+        [...document.querySelectorAll('[role="switch"]')].find((node) => node.getAttribute('aria-label') === ${label}).click();
+        (await import('/store.js')).closeSheet();
+        return 'null';
+    `);
+
+        const assertReading = async (want: Awaited<ReturnType<typeof scrollerState>>) => {
+            const actual = await scrollerState();
+
+            assert.equal(actual.row, want.row);
+            assert.ok(
+                Math.abs(actual.offset - want.offset) <= 2,
+                `${actual.offset} vs ${want.offset}`,
+            );
+        };
+
+        const back = async () => {
+            await go(other);
+            await until(
+                async () => (await shown("The other near rows session")).rows,
+                "other session",
+            );
+            await go(id);
+            await until(async () => (await shown(last)).rows, "kept session");
+            await twoFrames();
+        };
+
+        await say(app, other, "The other near rows session");
+        await experimental(false);
+        await openOn(id, last);
+        await synced(id);
+        await twoFrames();
+
+        try {
+            const full = await scrollerState();
+            const fullShape = await shape();
+
+            assert.equal(full.count, ids.length);
+            assert.equal(full.spacer, false);
+            assert.ok(Math.abs(full.gap) < 2);
+            await readAboveBottom();
+            const reading = await scrollerState();
+
+            assert.ok(reading.gap >= 200);
+            await inPage(
+                `(await import('/store.js')).openSheet({ type: 'appearance' }); return 'null';`,
+            );
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify([...document.querySelectorAll('[role="switch"]')].some(
+                (node) => node.getAttribute('aria-label') === ${label} && node.getAttribute('aria-checked') === 'false'));
+        `),
+                "the experimental switch, off",
+            );
+            await toggle();
+            assert.equal(
+                (await scrollerState()).count,
+                full.count,
+                "enabling it does not tear down rows already drawn",
+            );
+            await back();
+            await assertReading(reading);
+            const mounted = await scrollerState();
+
+            assert.ok(mounted.spacer && mounted.count < full.count);
+            await synced(id);
+            await go(other);
+            await until(
+                () =>
+                    inPage<boolean>(`
+            const cached = await (await import('/session-cache.js')).read(${Number(id)});
+            return JSON.stringify(cached?.record.place?.keep > 200);
+        `),
+                "the reading position, saved on the device",
+            );
+
+            for (const reload of [false, true]) {
+                const me = hold("/api/me");
+
+                try {
+                    if (reload) {
+                        await page.reload();
+                    } else {
+                        await page.navigate(`${base}/s/${id}`);
+                    }
+
+                    await until(async () => (await shown(last)).rows, "the verified device copy");
+                    assert.ok(me.entered);
+                    await twoFrames();
+                    assert.ok((await scrollerState()).spacer);
+                    await assertReading(reading);
+                } finally {
+                    me.release();
+                }
+
+                await ready();
+                await synced(id);
+                await assertReading(reading);
+            }
+
+            // Reopen the fixture at the bottom using precisely the same options, once with and once without the switch.
+            await inPage(`
+            const box = document.querySelector('.pane > .scroller');
+            box.scrollTop = box.scrollHeight;
+            box.dispatchEvent(new Event('scroll'));
+            return 'null';
+        `);
+            await back();
+            const atEnd = await scrollerState();
+
+            assert.ok(atEnd.spacer && Math.abs(atEnd.gap) < 2);
+            assert.equal(atEnd.row, full.row);
+            await experimental(false);
+            await twoFrames();
+            assert.deepEqual(await scrollerState(), full);
+            await back();
+            assert.deepEqual(
+                await shape(),
+                fullShape,
+                "reopening with the switch off uses the original DOM",
+            );
+        } finally {
+            await experimental(false);
+        }
+    },
+);
+
+test(
+    "near rows fills for reading earlier, Find, entry links and selection without replacing drawn rows",
+    real,
+    async () => {
+        const { id, ids, word, last } = await nearFixture();
+        const first = ids[0];
+        const end = ids.at(-1);
+
+        const open = async () => {
+            await openOn(id, last);
+            await synced(id);
+            await until(async () => (await scrollerState()).spacer, "estimated older rows");
+        };
+
+        const target = (entry: number | undefined) =>
+            inPage<boolean>(`
+        const target = document.querySelector('#entry-${entry}.flash');
+        const b = document.querySelector('.pane > .scroller').getBoundingClientRect();
+        return JSON.stringify(!!target && target.getBoundingClientRect().top >= b.top - 2 &&
+            target.getBoundingClientRect().top < b.bottom);
+    `);
+
+        await experimental(true);
+
+        try {
+            await open();
+            assert.equal(
+                await inPage<boolean>(
+                    `return JSON.stringify(window.find(${JSON.stringify(word(0))}));`,
+                ),
+                false,
+            );
+            await inPage(`
+            (await import('/store.js')).openSheet({ type: 'find', query: ${JSON.stringify(word(0))} });
+            return 'null';
+        `);
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify([...document.querySelectorAll('.find-result')].some((node) =>
+                node.textContent.includes(${JSON.stringify(word(0))})));
+        `),
+                "app Find sees the unmounted message",
+            );
+            await inPage(`document.querySelector('.find-result').click(); return 'null';`);
+            await until(() => target(first), "Find lands on and highlights the row");
+            assert.equal((await scrollerState()).count, ids.length);
+
+            // The jump API used by pins, entry links and extensions mounts before it asks for the element in rAF.
+            await inPage(`const box = document.querySelector('.pane > .scroller'); box.scrollTop = box.scrollHeight;
+            box.dispatchEvent(new Event('scroll')); return 'null';`);
+            await open();
+            assert.ok(
+                await inPage<boolean>(`
+            return JSON.stringify(await (await import('/chat.js')).jumpToEntry(${first}));
+        `),
+            );
+            await until(() => target(first), "entry jump lands on the previously unmounted row");
+
+            // Use a fresh bottom open. Move near, but not into, the estimated part. Its replacement must not move the row.
+            await inPage(`const box = document.querySelector('.pane > .scroller'); box.scrollTop = box.scrollHeight;
+            box.dispatchEvent(new Event('scroll')); return 'null';`);
+            await open();
+            await inPage(`
+            const box = document.querySelector('.pane > .scroller');
+            const gap = box.querySelector('.near-gap');
+            box.scrollTop += gap.getBoundingClientRect().bottom - box.getBoundingClientRect().top + box.clientHeight / 4;
+            window.nearOld = document.getElementById('entry-${end}');
+            window.nearAt = window.nearOld.getBoundingClientRect().top;
+            window.nearBefore = { top: box.scrollTop, height: box.scrollHeight, client: box.clientHeight, offset: window.nearAt };
+            box.dispatchEvent(new Event('scroll'));
+            return 'null';
+        `);
+            await twoFrames();
+            const after = await inPage<{
+                spacer: boolean;
+                same: boolean;
+                delta: number;
+                before: unknown;
+                top: number;
+                height: number;
+            }>(`
+                const box = document.querySelector('.pane > .scroller');
+                return JSON.stringify({ spacer: !!box.querySelector('.near-gap'), same: window.nearOld === document.getElementById('entry-${end}'),
+                    delta: window.nearOld.getBoundingClientRect().top - window.nearAt, before: window.nearBefore,
+                    top: box.scrollTop, height: box.scrollHeight });
+            `);
+
+            assert.ok(
+                !after.spacer && after.same && Math.abs(after.delta) <= 2,
+                JSON.stringify(after),
+            );
+
+            await inPage(`const box = document.querySelector('.pane > .scroller'); box.scrollTop = box.scrollHeight;
+            box.dispatchEvent(new Event('scroll')); return 'null';`);
+            await open();
+            // Keyboard selection includes material from both ends. Inspect what the browser passes to Copy.
+            await inPage(`
+            document.activeElement.blur();
+            document.addEventListener('copy', (e) => { window.copiedNear = String(getSelection()); e.preventDefault(); }, { once: true });
+            return 'null';
+        `);
+            await page.press("Control+a");
+            await page.press("Control+c");
+            const copied = await inPage<string>(`return JSON.stringify(window.copiedNear ?? '');`);
+
+            assert.ok(
+                copied.includes(word(0)) && copied.includes(last),
+                "Copy contains the whole selection, including older rows",
+            );
+        } finally {
+            await experimental(false);
+        }
+    },
+);
+
+test("near rows preserves unread opening and entry jumps on the PiP board", real, async () => {
+    const pip = await app.pip.ensure(owner(app));
+    const { ids, last } = await nearFixture(false, pip);
+    const background = await newSession(app);
+
+    await say(app, background, "The session behind PiP");
+    await experimental(true);
+    await openOn(background, "The session behind PiP");
+
+    try {
+        await inPage(`
+            (await import('/theme.js')).setPrefs({ pip: 'board' });
+            (await import('/store.js')).setUnread(${Number(pip)}, true);
+            (await import('/pip.js')).openPip();
+            return 'null';
+        `);
+        await until(async () => (await shown(last)).rows, "PiP transcript");
+        await synced(pip);
+        await twoFrames();
+        const bottom = await scrollerState();
+
+        assert.ok(bottom.spacer && Math.abs(bottom.gap) < 2);
+        assert.equal(
+            await inPage(
+                `return JSON.stringify((await import('/store.js')).store.state.unread.includes(${Number(pip)}));`,
+            ),
+            false,
+        );
+        assert.equal(
+            await inPage(
+                `return JSON.stringify(await (await import('/chat.js')).jumpToEntry(${ids[0]}));`,
+            ),
+            true,
+        );
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(!!document.querySelector('#entry-${ids[0]}.flash'));`,
+                ),
+            "jump to a PiP entry",
+        );
+        assert.equal((await scrollerState()).spacer, false);
+    } finally {
+        await inPage(
+            `(await import('/pip.js')).closePip(); (await import('/theme.js')).setPrefs({ pip: 'floating' }); return 'null';`,
+        );
+        await experimental(false);
+    }
+});
+
+test(
+    "near rows keeps a reading anchor through a late image and KaTeX, then follows streaming",
+    real,
+    async () => {
+        const { id, ids, last, lesson } = await nearFixture(true);
+
+        assert.ok(lesson);
+        const math = hold("/vendor/katex.mjs");
+        const image = hold(`/api/c/${id}/file`);
+
+        await experimental(true);
+
+        try {
+            await openOn(id, last);
+            await synced(id);
+            assert.ok((await scrollerState()).spacer);
+            await inPage(`
+            const box = document.querySelector('.pane > .scroller');
+            const row = document.getElementById('entry-${ids[50]}');
+            box.scrollTop += row.getBoundingClientRect().top - box.getBoundingClientRect().top;
+            box.dispatchEvent(new Event('scroll'));
+            return 'null';
+        `);
+            await until(() => math.entered, "KaTeX requested");
+            await inPage(
+                `document.querySelector('img[alt="Late image"]').loading = 'eager'; return 'null';`,
+            );
+            await until(() => image.entered, "image requested");
+            await twoFrames();
+            const reading = await scrollerState();
+
+            assert.equal(reading.row, `entry-${ids[50]}`);
+            assert.ok(reading.spacer && reading.gap >= 60);
+
+            const assertPlace = async () => {
+                const after = await scrollerState();
+
+                assert.equal(after.row, reading.row);
+                assert.ok(
+                    Math.abs(after.offset - reading.offset) <= 2,
+                    `${after.offset} vs ${reading.offset}`,
+                );
+            };
+
+            image.release();
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify(document.querySelector('img[alt="Late image"]')?.naturalHeight === 300);
+        `),
+                "the previously unsized image",
+            );
+            await twoFrames();
+            await assertPlace();
+            math.release();
+            await until(
+                () =>
+                    inPage<boolean>(`
+            return JSON.stringify(!!document.querySelector('.transcript .katex'));
+        `),
+                "KaTeX has rendered",
+            );
+            await twoFrames();
+            await assertPlace();
+
+            await inPage(`
+            const box = document.querySelector('.pane > .scroller');
+            box.querySelector('.activity-head[aria-expanded="false"]')?.click();
+            const { store } = await import('/store.js');
+            store.set(({ view, me }) => ({ view: { ...view,
+                inbox: [{ id: 'near-queue', by: me.id, mode: 'followUp', text: 'queued with near rows' }],
+            } }));
+            return 'null';
+        `);
+            await until(
+                () =>
+                    inPage<boolean>(`
+            const lesson = document.querySelector('.lesson-call');
+            const queue = [...document.querySelectorAll('.queued-text')];
+            return JSON.stringify(lesson?.textContent.includes(${JSON.stringify(lesson.pending ? lesson.text : "In memory:")}) &&
+                queue.some((item) => item.textContent.includes('queued with near rows')) || false);
+        `),
+                "the lesson card and queue still draw",
+            );
+            await inPage(`
+            const box = document.querySelector('.pane > .scroller');
+            box.scrollTop = box.scrollHeight;
+            box.dispatchEvent(new Event('scroll'));
+            return 'null';
+        `);
+            await until(async () => Math.abs((await scrollerState()).gap) < 2, "at the bottom");
+            // A small clamp before a larger resize can deliver a scroll event before the layout observer.
+            await inPage(`
+                const box = document.querySelector('.pane > .scroller');
+                const row = document.getElementById('entry-${ids[51]}');
+                box.scrollTop -= 3;
+                row.style.minHeight = '440px';
+                box.dispatchEvent(new Event('scroll'));
+                return 'null';
+            `);
+            await twoFrames();
+            assert.ok(
+                Math.abs((await scrollerState()).gap) < 2,
+                "a resize is not a reader scrolling away",
+            );
+
+            for (const n of [40, 100, 240]) {
+                await inPage(`
+                const { store } = await import('/store.js');
+                const text = 'Streaming near rows. '.repeat(${n});
+                store.set(({ view }) => ({ view: { ...view, live: { busy: true,
+                    generation: { attempt: 0, message: { blocks: [{ type: 'text', text }] } },
+                } } }));
+                return 'null';
+            `);
+                await twoFrames();
+                const now = await scrollerState();
+
+                assert.ok(now.spacer, "the prefix is still deferred");
+                assert.ok(Math.abs(now.gap) < 2, `stream did not follow: ${now.gap}`);
+            }
+        } finally {
+            image.release();
+            math.release();
+            await experimental(false);
+        }
+    },
+);
 
 for (const reshape of [false, true]) {
     test(

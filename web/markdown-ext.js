@@ -6,16 +6,24 @@ let findMath = () => undefined;
 let revision = 0;
 
 export function setFences(find) {
-    findFence = find;
+    if (findFence !== find) {
+        findFence = find;
+        markdownChanged();
+    }
 }
 
 export function setMath(find) {
-    findMath = find;
+    if (findMath !== find) {
+        findMath = find;
+        markdownChanged();
+    }
 }
 
 export const fenceFor = (lang) => findFence(String(lang).toLowerCase());
 
-export const mathOn = () => findMath() !== undefined;
+export const mathFor = () => findMath();
+
+export const mathOn = () => mathFor() !== undefined;
 
 export const markdownRevision = () => revision;
 

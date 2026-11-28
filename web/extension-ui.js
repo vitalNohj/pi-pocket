@@ -127,12 +127,23 @@ function markdownSpecOf(kind, matches = () => true) {
     return undefined;
 }
 
+// Use a stable renderer identity: Markdown can keep a cached fence when its winning registration has not changed.
+const fenceRenderers = new WeakMap();
+
 setFences((lang) => {
     const spec = markdownSpecOf("fence", (each) =>
         each.langs.some((one) => one.toLowerCase() === lang),
     );
 
-    return spec === undefined ? undefined : { ...spec, component: framedFence(spec) };
+    if (spec === undefined) {
+        return undefined;
+    }
+
+    if (!fenceRenderers.has(spec)) {
+        fenceRenderers.set(spec, { ...spec, component: framedFence(spec) });
+    }
+
+    return fenceRenderers.get(spec);
 });
 setMath(() => markdownSpecOf("mathInline"));
 
@@ -417,13 +428,24 @@ export function onExtensionsGone(listener) {
 /** Load what the server lists, and unload what it no longer does or lists at a new address (a new version). */
 function sync(list, known = true) {
     const nextOrder = list.map((each) => each.module);
-    const orderChanged =
-        order.length !== nextOrder.length ||
-        order.some((module, index) => module !== nextOrder[index]);
+
+    // A name in hello is not a renderer. In particular, a device copy can have drawn Markdown before hello;
+    // listing the browser modules must not discard that work. Registration and teardown invalidate separately.
+    const hasRenderer = (module) => {
+        const record = modules.get(module);
+
+        return (
+            liveRecord(record) && (record.adds.fence.size > 0 || record.adds.mathInline.size > 0)
+        );
+    };
+
+    const before = order.filter(hasRenderer);
+    const after = nextOrder.filter(hasRenderer);
 
     order = nextOrder;
 
-    if (orderChanged) {
+    // Order only matters to Markdown when it changes the precedence of already registered renderers.
+    if (before.length !== after.length || before.some((module, index) => module !== after[index])) {
         markdownChanged();
     }
 
