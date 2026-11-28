@@ -141,8 +141,10 @@ namespace PiPocket
         void LayoutChrome()
         {
             if (!IsHandleCreated || IsDisposed || Disposing || desktopMenu == null) { return; }
-            bool next = !fullScreen && host.WindowPrefs.titleBar == "seamless" && !SystemInformation.HighContrast &&
-                DwmIsCompositionEnabled(out composition) == 0 && composition;
+            bool accessible = SystemInformation.HighContrast;
+            bool composition;
+            bool composed = DwmIsCompositionEnabled(out composition) == 0 && composition;
+            bool next = !fullScreen && host.WindowPrefs.titleBar == "seamless" && !accessible && composed;
             if (next != seamless)
             {
                 seamless = next;
@@ -150,23 +152,13 @@ namespace PiPocket
             }
 
             caption = seamless ? CaptionBounds() : Rectangle.Empty;
-            bool accessible = SystemInformation.HighContrast;
             int immersive = !accessible && dark ? 1 : 0;
             if (DwmSetWindowAttribute(Handle, 20, ref immersive, 4) != 0) { DwmSetWindowAttribute(Handle, 19, ref immersive, 4); }
-            bool allowsTransparency = AllowsTransparency();
-            int backdrop = pageChrome && host.WindowPrefs.seeThrough && !fullScreen && allowsTransparency
-                ? (host.WindowPrefs.material == "mica" ? 2 : 3) : 1; // DWMSBT_MAINWINDOW / TRANSIENTWINDOW
-            // DwmExtendFrameIntoClientArea uses a negative left margin for the full glass sheet.
-            var frameMargins = new Margins { Top = FrameExtension };
-            var margins = backdrop == 1 ? frameMargins : new Margins { Left = -1 };
-            int glass = DwmExtendFrameIntoClientArea(Handle, ref margins);
-            int result = DwmSetWindowAttribute(Handle, 38, ref backdrop, 4);
-            translucent = backdrop != 1 && glass == 0 && result == 0;
-            if (backdrop != 1 && !translucent)
-            {
-                DwmExtendFrameIntoClientArea(Handle, ref frameMargins);
-            }
-            EffectStatus = !allowsTransparency || backdrop != 1 && !translucent ? "unsupported" :
+            bool allowsTransparency = composed && !accessible && TransparencyEffectsEnabled();
+            int backdrop = seamless && pageChrome && host.WindowPrefs.seeThrough && allowsTransparency
+                ? (host.WindowPrefs.material == "mica" ? BackdropMica : BackdropAcrylic) : BackdropNone;
+            translucent = ApplyBackdrop(backdrop);
+            EffectStatus = !allowsTransparency || backdrop != BackdropNone && !translucent ? "unsupported" :
                 fullScreen ? "full-screen" : pageChrome ? "available" : "page";
             host.ReportWindowEffect(this, EffectStatus);
 
@@ -176,8 +168,8 @@ namespace PiPocket
             DwmSetWindowAttribute(Handle, 35, ref background, 4); // DWMWA_CAPTION_COLOR, Win11
             DwmSetWindowAttribute(Handle, 36, ref foreground, 4);
             Color surface = !accessible ? frame ?? SystemColors.Window : SystemColors.Window;
-            // Black in the extended area lets DWM paint the window buttons over the custom frame.
-            BackColor = translucent || seamless ? Color.Black : surface;
+            // Keep the normal caption extension black. A material uses the alpha-clear paint path below.
+            BackColor = seamless ? Color.Black : surface;
             view.DefaultBackgroundColor = translucent ? Color.Transparent : surface;
             bool showMenu = !fullScreen && (host.NativeShowMenuBar || altMenu);
             bool showNotice = !fullScreen && remoteNotice.Text.Length > 0;
@@ -224,7 +216,33 @@ namespace PiPocket
             }
         }
 
-        bool composition;
+        bool ApplyBackdrop(int backdrop)
+        {
+            if (backdrop != BackdropNone)
+            {
+                // Extend the glass through the entire client area, then put the system material under it.
+                var glass = new Margins { Left = -1 };
+                if (DwmExtendFrameIntoClientArea(Handle, ref glass) == 0 &&
+                    DwmSetWindowAttribute(Handle, SystemBackdropAttribute, ref backdrop, 4) == 0) { return true; }
+            }
+
+            // Clear a previous material even if only one of the two native calls succeeded.
+            int none = BackdropNone;
+            DwmSetWindowAttribute(Handle, SystemBackdropAttribute, ref none, 4);
+            var captionOnly = new Margins { Top = FrameExtension };
+            DwmExtendFrameIntoClientArea(Handle, ref captionOnly);
+            return false;
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs args)
+        {
+            if (!translucent) { base.OnPaintBackground(args); return; }
+
+            // The WebView2 background is clear; the backing surface must also have zero alpha.
+            // Do not let the default WinForms brush put an opaque black fill over the DWM sheet.
+            args.Graphics.Clear(Color.FromArgb(0));
+        }
+
         internal bool IsForeground { get { return IsHandleCreated && GetForegroundWindow() == Handle; } }
 
         async void SendGeometry(string state)
@@ -238,10 +256,13 @@ namespace PiPocket
 
         internal static bool AllowsTransparency()
         {
-            if (Environment.OSVersion.Version.Build < 22621 || SystemInformation.HighContrast) { return false; }
             bool enabled;
-            if (DwmIsCompositionEnabled(out enabled) != 0 || !enabled) { return false; }
+            return !SystemInformation.HighContrast && DwmIsCompositionEnabled(out enabled) == 0 && enabled && TransparencyEffectsEnabled();
+        }
 
+        static bool TransparencyEffectsEnabled()
+        {
+            if (Environment.OSVersion.Version.Build < 22621) { return false; }
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
             {
                 return key == null || !Equals(key.GetValue("EnableTransparency"), 0);
@@ -350,6 +371,8 @@ namespace PiPocket
             LayoutChrome();
         }
 
+        const int SystemBackdropAttribute = 38; // DWMWA_SYSTEMBACKDROP_TYPE
+        const int BackdropNone = 1, BackdropMica = 2, BackdropAcrylic = 3; // DWMSBT_NONE / MAINWINDOW / TRANSIENTWINDOW
         const uint FrameChanged = 0x0037; // SWP_FRAMECHANGED | NOMOVE | NOSIZE | NOZORDER | NOACTIVATE
         [StructLayout(LayoutKind.Sequential)] struct Margins { public int Left, Right, Top, Bottom; }
         [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }

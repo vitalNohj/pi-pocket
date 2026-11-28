@@ -74,12 +74,15 @@ namespace PiPocket
                 else
                 {
                     DetachDictation();
+                    ResetWindowPage();
                     if (args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled) { ShowPageNotice("Could not load this server. Check the address or try again."); }
                 }
             };
             core.ProcessFailed += delegate (object sender, CoreWebView2ProcessFailedEventArgs args)
             {
                 DetachDictation();
+                if (args.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited ||
+                    args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited) { ResetWindowPage(); }
                 host.ReportPage(this, committed ? origin : null, true);
                 if (!recovered && args.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited)
                 {
@@ -302,6 +305,12 @@ namespace PiPocket
             if (message.Msg == TaskbarBadge.ButtonCreated && host != null)
             {
                 UpdateBadge();
+            }
+            // Reapply the native material after Windows changes accessibility or transparency.
+            // Queue this after WinForms has processed the broadcast (including SystemInformation updates).
+            if ((message.Msg == 0x001a || message.Msg == 0x031e) && IsHandleCreated && !Disposing && !IsDisposed)
+            {
+                BeginInvoke((MethodInvoker)LayoutChrome); // WM_SETTINGCHANGE / WM_DWMCOMPOSITIONCHANGED
             }
         }
     }
