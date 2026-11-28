@@ -18,6 +18,7 @@ import {
     serverAddress,
     signInOrigin,
 } from "./connection/probe.mjs";
+import { retryDelay } from "./connection/retry.mjs";
 import { diagnostics } from "./diagnostics/log.mjs";
 import { patchPreferences, readPreferences, savePreferences } from "./preferences.mjs";
 import {
@@ -31,6 +32,8 @@ import {
 const localStates = ["stopped", "starting", "running", "error"];
 const unavailable = () => connectionError("unavailable", "This action is not available yet.");
 const invalid = () => connectionError("invalid", "Check the values and try again.");
+const previewRequired = () =>
+    connectionError("preview", "Confirm that you want to open this sign-in webpage.");
 const noData = (data) => data === undefined;
 const optionalSection = (data) =>
     data === undefined || (onlyKeys(data, ["section"]) && isSection(data.section));
@@ -83,6 +86,7 @@ export class DesktopController {
     #generation = 0;
     #switched = null;
     #checks = null;
+    #startup = null;
     #checkingPage = null;
     #timer = null;
     #failures = 0;
@@ -185,7 +189,8 @@ export class DesktopController {
                     .catch(() => {});
 
                 if (mode === "remote" && connectAtStartup) {
-                    await this.#connect(remoteAddress);
+                    this.#startup = { address: remoteAddress, failures: 0 };
+                    await this.#trySavedRemote("initial");
                 }
             }
         } catch (error) {
@@ -592,6 +597,7 @@ export class DesktopController {
         );
 
         if (Object.hasOwn(patch, "home")) {
+            this.#scheduleStartup();
             this.#monitor();
         }
     }
@@ -629,15 +635,31 @@ export class DesktopController {
         }
     }
 
-    async #probe(address, attempt) {
+    async #probe(address, attempt, background = false) {
+        const checking = { address, status: "checking", message: "Checking the server…" };
+        const previous = this.#state.home.check;
+
+        if (!background) {
+            this.#state.home.check = checking;
+            this.#publish();
+        }
+
         const report = (data) => {
-            if (!attempt.signal.aborted) {
+            const current = this.#state.home.check;
+
+            // Leave the last result visible during startup retries, including Retry now and
+            // the preview control. Do not overwrite a newer Check or a different address.
+            const ownsCheck = background
+                ? current === previous &&
+                  previous?.address === address &&
+                  previous.status !== "checking"
+                : current === checking;
+
+            if (!attempt.signal.aborted && ownsCheck) {
                 this.#state.home.check = { address, ...data };
                 this.#publish();
             }
         };
-
-        report({ status: "checking", message: "Checking the server…" });
 
         try {
             const match = await probeServer(address, this.#state.preferences.home, attempt.signal);
@@ -646,14 +668,20 @@ export class DesktopController {
 
             return match;
         } catch (error) {
-            report({ status: "error", message: error.message, code: error.code });
-            this.#log("home.probe", error.code);
+            if (!attempt.signal.aborted) {
+                report({ status: "error", message: error.message, code: error.code });
+                this.#log("home.probe", error.code);
+            } else if (!this.#closed && this.#state.home.check === checking) {
+                this.#state.home.check = null;
+                this.#publish();
+            }
 
             throw error;
         }
     }
 
     #switchAttempt() {
+        this.#cancelStartup();
         this.#switched?.abort();
         this.#checks?.abort();
         this.#switched = new AbortController();
@@ -672,13 +700,13 @@ export class DesktopController {
         const match = await this.#probe(address, attempt);
 
         if (match.kind === "preview" && !preview) {
-            throw connectionError("preview", "Confirm that you want to open this sign-in webpage.");
+            throw previewRequired();
         }
 
         return this.#activate(attempt, "remote", address, match);
     }
 
-    async #activate(attempt, mode, address, { kind, bridge }) {
+    async #activate(attempt, mode, address, match) {
         const checkCanceled = () => {
             if (attempt.signal.aborted || this.#closed) {
                 throw connectionError("canceled", "A different connection was selected.");
@@ -698,6 +726,11 @@ export class DesktopController {
             };
         });
         checkCanceled();
+
+        return this.#openConnection(mode, address, match);
+    }
+
+    #openConnection(mode, address, { kind, bridge }) {
         this.#failures = 0;
         this.#state.home.active = {
             mode,
@@ -797,6 +830,79 @@ export class DesktopController {
         return this.callHost("local.restart");
     }
 
+    #clearStartupWork() {
+        const startup = this.#startup;
+
+        if (startup) {
+            clearTimeout(startup.timer);
+            startup.probe?.attempt.abort();
+            startup.probe = null;
+        }
+    }
+
+    #cancelStartup() {
+        this.#clearStartupWork();
+        this.#startup = null;
+    }
+
+    #scheduleStartup() {
+        const startup = this.#startup;
+
+        if (!startup) {
+            return;
+        }
+
+        const prefs = this.#state.preferences.home;
+
+        clearTimeout(startup.timer);
+
+        if (!prefs.connectAtStartup) {
+            if (startup.probe?.source !== "retry") {
+                this.#cancelStartup();
+            }
+        } else if (!prefs.healthInterval) {
+            if (startup.probe?.source === "background") {
+                this.#clearStartupWork();
+            }
+        } else if (!startup.probe) {
+            startup.timer = setTimeout(
+                () => void this.#trySavedRemote("background").catch(() => {}),
+                retryDelay(prefs, startup.failures),
+            ).unref();
+        }
+    }
+
+    async #trySavedRemote(source) {
+        const startup = this.#startup;
+        const attempt = new AbortController();
+
+        this.#clearStartupWork();
+        startup.probe = { attempt, source };
+
+        try {
+            const match = await this.#probe(startup.address, attempt, source === "background");
+
+            if (attempt.signal.aborted) {
+                throw connectionError("canceled", "The check was canceled.");
+            }
+
+            if (match.kind === "preview") {
+                throw previewRequired();
+            }
+
+            // This mode and address are already saved. Open only after identity checks pass;
+            // no asynchronous preference write can outlive a canceled startup.
+            this.#startup = null;
+            this.#openConnection("remote", startup.address, match);
+        } finally {
+            if (this.#startup === startup && startup.probe?.attempt === attempt) {
+                startup.probe = null;
+                startup.failures++;
+                this.#scheduleStartup();
+            }
+        }
+    }
+
     #monitor(delay) {
         clearTimeout(this.#timer);
         this.#checkingPage?.abort();
@@ -862,13 +968,7 @@ export class DesktopController {
                 active.message = error.message;
                 this.#log("home.health", error.code || "network");
                 this.#publish();
-                delay =
-                    Math.min(
-                        prefs.maxBackoff,
-                        prefs.healthInterval *
-                            2 ** Math.min(6, this.#failures - prefs.failureThreshold),
-                    ) *
-                    (750 + Math.random() * 250);
+                delay = retryDelay(prefs, this.#failures);
             }
         } finally {
             if (current()) {
@@ -881,7 +981,11 @@ export class DesktopController {
         this.#failures = 0;
         const active = this.#state.home.active;
 
-        if (active?.mode === "remote") {
+        if (this.#startup) {
+            this.#checks?.abort();
+            this.#startup.failures = 0;
+            await this.#trySavedRemote("retry");
+        } else if (active?.mode === "remote") {
             await this.#health(active);
         } else if (this.#state.preferences.home.remoteAddress) {
             await this.#connect(this.#state.preferences.home.remoteAddress);
@@ -892,6 +996,7 @@ export class DesktopController {
 
     close() {
         this.#closed = true;
+        this.#cancelStartup();
         this.#checks?.abort();
         this.#switched?.abort();
         this.#monitor();

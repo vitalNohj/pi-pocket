@@ -4,12 +4,27 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import timers from "node:timers/promises";
 import { DesktopController } from "../../packaging/desktop/controller/index.mjs";
 import {
     probeServer,
     serverAddress,
 } from "../../packaging/desktop/controller/connection/probe.mjs";
 import { fixture } from "./fixture.mjs";
+
+const { setTimeout: sleep } = timers;
+
+async function until(condition) {
+    for (let i = 0; i < 100; i++) {
+        if (condition()) {
+            return;
+        }
+
+        await sleep(10);
+    }
+
+    assert.fail("The connection did not reach the expected state.");
+}
 
 async function desktop(t, existingInstall = false, folder = undefined) {
     if (!folder) {
@@ -75,7 +90,23 @@ async function desktop(t, existingInstall = false, folder = undefined) {
 
     const action = (id, data) => call("action", { id, data });
 
-    return { controller, folder, call, action, hosts };
+    return { controller, folder, call, action, hosts, messages };
+}
+
+async function saveRemote(t, address, home) {
+    const desktopApp = await desktop(t);
+
+    await desktopApp.call("patchPreferences", { home });
+    await desktopApp.action("home.connect", { address });
+    desktopApp.controller.close();
+
+    return desktopApp.folder;
+}
+
+function probes(remote) {
+    const endpoint = `${new URL(remote.address).pathname}/api/pocket/info`;
+
+    return remote.requests.filter(({ path }) => path === endpoint).length;
 }
 
 test("a new install starts on Home and upgrades keep local startup", async (t) => {
@@ -265,6 +296,178 @@ test("checks do not change the active connection, and Retry keeps the page gener
     assert.equal(controller.snapshot().home.active.generation, first.generation);
 });
 
+test("saved startup retries at the configured interval, backs off, and opens the same server", async (t) => {
+    const remote = await fixture();
+
+    t.after(() => remote.close());
+    const folder = await saveRemote(t, remote.address, {
+        healthInterval: 1,
+        failureThreshold: 2,
+        maxBackoff: 3,
+    });
+    const { controller, call, action, hosts, messages } = await desktop(t, false, folder);
+    const stateFile = await readFile(join(folder, "desktop.json"), "utf8");
+    const failures = () =>
+        messages.filter(
+            ({ type, state }) => type === "state" && state.home.check?.status === "error",
+        ).length;
+
+    await call("subscribe");
+    remote.setMode("down");
+    remote.requests.length = 0;
+    t.mock.method(Math, "random", () => 0.5);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await controller.begin();
+    assert.equal(probes(remote), 1);
+    assert.equal(failures(), 1);
+    assert.equal(controller.snapshot().home.active, null);
+
+    async function advance(delay) {
+        const count = probes(remote);
+
+        t.mock.timers.tick(delay - 1);
+        await sleep(30);
+        assert.equal(probes(remote), count, "no probe before the scheduled delay");
+        t.mock.timers.tick(1);
+    }
+
+    for (const delay of [1000, 875, 1750, 2625, 2625]) {
+        const expected = failures() + 1;
+
+        await advance(delay);
+        await until(() => failures() === expected);
+        assert.equal(probes(remote), expected, "one probe per failed attempt");
+    }
+
+    // Retry now bypasses a pending timer. If it fails, the delay starts at the normal interval again.
+    const beforeRetry = probes(remote);
+
+    await assert.rejects(action("home.retry"), { code: "not-pocket" });
+    assert.equal(probes(remote), beforeRetry + 1);
+    remote.setMode("pocket");
+    await advance(1000);
+    await until(() => controller.snapshot().home.active?.address === remote.address);
+    assert.equal(controller.snapshot().home.active.kind, "pocket");
+    assert.deepEqual(hosts, ["local.inspect"]);
+    assert.equal(await readFile(join(folder, "desktop.json"), "utf8"), stateFile);
+});
+
+test("zero health interval allows one startup probe, but Retry now still works", async (t) => {
+    const remote = await fixture();
+
+    t.after(() => remote.close());
+    const folder = await saveRemote(t, remote.address, { healthInterval: 0 });
+    const { controller, action } = await desktop(t, false, folder);
+
+    remote.requests.length = 0;
+    remote.setMode("down");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await controller.begin();
+    assert.equal(probes(remote), 1);
+    remote.setMode("pocket");
+    t.mock.timers.tick(300_000);
+    await sleep(30);
+    assert.equal(probes(remote), 1);
+    assert.equal(controller.snapshot().home.active, null);
+    await action("home.retry");
+    assert.equal(probes(remote), 2);
+    assert.equal(controller.snapshot().home.active.address, remote.address);
+});
+
+test("turning off Connect at startup makes no probe on the next launch", async (t) => {
+    const remote = await fixture();
+
+    t.after(() => remote.close());
+    const folder = await saveRemote(t, remote.address, {
+        connectAtStartup: false,
+        healthInterval: 1,
+    });
+    const { controller, action } = await desktop(t, false, folder);
+
+    remote.requests.length = 0;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await controller.begin();
+    t.mock.timers.tick(300_000);
+    await sleep(30);
+    assert.equal(probes(remote), 0);
+    assert.equal(controller.snapshot().home.active, null);
+    await action("home.connect", { address: remote.address });
+    assert.equal(controller.snapshot().home.active.address, remote.address);
+});
+
+test("a deliberate server change or Quit cancels a pending startup timer", async (t) => {
+    const remote = await fixture();
+    const other = await fixture({ prefix: "/other" });
+
+    t.after(() => remote.close());
+    t.after(() => other.close());
+    const folder = await saveRemote(t, remote.address, { healthInterval: 1 });
+    const quitting = await desktop(t, false, folder);
+    const switching = await desktop(t, false, folder);
+
+    remote.setMode("down");
+    remote.requests.length = 0;
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await quitting.controller.begin();
+    await switching.controller.begin();
+    assert.equal(probes(remote), 2);
+    quitting.controller.close();
+    await switching.action("home.connect", { address: other.address });
+    const active = switching.controller.snapshot().home.active;
+
+    remote.setMode("pocket");
+    t.mock.timers.tick(300_000);
+    await sleep(30);
+    assert.equal(probes(remote), 2);
+    assert.equal(quitting.controller.snapshot().home.active, null);
+    assert.equal(active.address, other.address);
+    assert.equal(switching.controller.snapshot().home.active.generation, active.generation);
+});
+
+test("changing servers aborts an in-flight automatic retry", async (t) => {
+    const held = Promise.withResolvers();
+    let aborted = false;
+    let mode = "pocket";
+    const server = createServer((_request, response) => {
+        if (mode === "hold") {
+            response.on("close", () => {
+                aborted = true;
+            });
+            held.resolve();
+        } else if (mode === "down") {
+            response.writeHead(503).end();
+        } else {
+            response
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(JSON.stringify({ name: "pi-pocket", bridge: 1 }));
+        }
+    });
+
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => {
+        server.closeAllConnections();
+
+        return new Promise((resolve) => server.close(resolve));
+    });
+    const folder = await saveRemote(t, `http://127.0.0.1:${server.address().port}`, {
+        healthInterval: 1,
+        probeTimeout: 30,
+    });
+    const { controller, action } = await desktop(t, false, folder);
+
+    mode = "down";
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await controller.begin();
+    mode = "hold";
+    t.mock.timers.tick(1000);
+    await held.promise;
+    const active = await action("home.local.open");
+
+    await until(() => aborted);
+    assert.equal(active.mode, "local");
+    assert.deepEqual(controller.snapshot().home.active, active);
+});
+
 test("a saved address never bypasses confirmation for an HTML preview", async (t) => {
     const remote = await fixture();
 
@@ -275,10 +478,21 @@ test("a saved address never bypasses confirmation for an HTML preview", async (t
     remote.setMode("sso");
 
     const reopened = await desktop(t, false, folder);
+    const previews = () =>
+        reopened.messages.filter(
+            ({ type, state }) => type === "state" && state.home.check?.status === "preview",
+        ).length;
 
+    await reopened.call("subscribe");
+    t.mock.timers.enable({ apis: ["setTimeout"] });
     await reopened.controller.begin();
     assert.equal(reopened.controller.snapshot().home.active, null);
     assert.equal(reopened.controller.snapshot().home.check.status, "preview");
+    const first = previews();
+
+    t.mock.timers.tick(10_000);
+    await until(() => previews() > first);
+    assert.equal(reopened.controller.snapshot().home.active, null);
     await assert.rejects(reopened.action("home.retry"), { code: "preview" });
     assert.equal(reopened.controller.snapshot().home.active, null);
     assert.equal(

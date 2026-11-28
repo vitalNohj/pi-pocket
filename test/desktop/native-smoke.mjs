@@ -134,6 +134,164 @@ async function noLocalServer() {
     );
 }
 
+async function stopApp() {
+    await quit();
+    await until("Quit ended the app", () => exited(app));
+    app = undefined;
+}
+
+async function testStartupRetry() {
+    const requests = (server, path) =>
+        server.requests.filter((request) => request.path === `/pocket/${path}`).length;
+    const probes = (server = remote) => requests(server, "api/pocket/info");
+    const pages = (server = remote) => requests(server, "page-only");
+    const connect = (label) => gui("press", settingsTitle, label);
+    const shown = (label) => gui("expect-text", settingsTitle, label);
+    const pageTitle = "Pi Pocket";
+
+    // Keep the address that the installed UI saved. Set short intervals in the disposable
+    // profile while the app is stopped, so we can test several real relaunches in CI.
+    async function launchSaved(server, mode, home = {}) {
+        const file = JSON.parse(await readFile(settings, "utf8"));
+
+        assert.equal(file.preferences.home.mode, "remote");
+        assert.equal(file.preferences.home.remoteAddress, server.address);
+        Object.assign(file.preferences.home, {
+            connectAtStartup: true,
+            healthInterval: 1,
+            failureThreshold: 1,
+            maxBackoff: 2,
+            ...home,
+        });
+        await writeFile(settings, JSON.stringify(file));
+        server.setMode(mode);
+        const before = { probes: probes(server), pages: pages(server) };
+
+        app = await start();
+
+        return before;
+    }
+
+    const auto = await launchSaved(remote, "down", { maxBackoff: 8 });
+    const times = [];
+
+    for (let n = 1; n <= 4; n++) {
+        await until(
+            `startup probe ${n} reached the unavailable server`,
+            () => probes() >= auto.probes + n,
+        );
+        times.push(performance.now());
+    }
+
+    // Observations use 400 ms polling and include scheduler latency. The shared test
+    // checks the exact schedule and cap with a controlled clock.
+    assert(times[3] - times[2] >= 2500, "consecutive startup failures increased the retry delay");
+    assert.equal(pages(), auto.pages);
+    await shown("Retry now");
+    await shot(settingsTitle, "startup-retry-waiting");
+    remote.setMode("sso");
+    await shown("Open webpage anyway");
+    assert.equal(pages(), auto.pages, "startup retry did not open the HTML-only sign-in page");
+    await shot(settingsTitle, "startup-retry-preview-not-opened");
+    remote.setMode("pocket");
+    await until(
+        "the saved server opened automatically after it recovered",
+        () => pages() > auto.pages,
+    );
+    assert.equal((await prefs()).home.remoteAddress, remote.address);
+    await shot(pageTitle, "startup-retry-connected");
+    console.log(
+        "Saved startup backed off, did not open an HTML-only page, and recovered without editing the address.",
+    );
+
+    // The existing active-page recovery still reloads the page after a failed health check.
+    const connected = pages();
+
+    remote.setMode("down");
+    await until("the active page reported connection loss", async () =>
+        (await readFile(join(stateFolder, "diagnostics.log"), "utf8")).includes(
+            "home.health: not-pocket",
+        ),
+    );
+    await gui("expect-text", pageTitle, "Pi Pocket fixture server");
+    assert.equal(pages(), connected, "probing left the existing page intact");
+    remote.setMode("pocket");
+    await until("the existing session view recovered", () => pages() > connected);
+    await stopApp();
+
+    const zero = await launchSaved(remote, "down", { healthInterval: 0 });
+
+    await shown("Retry now");
+    remote.setMode("pocket");
+    await sleep(2500);
+    assert.equal(probes(), zero.probes + 1, "interval 0 allowed only the initial probe");
+    assert.equal(pages(), zero.pages);
+    await connect("Retry now");
+    await until(
+        "Retry now opened the saved address without waiting for the timer",
+        () => pages() > zero.pages,
+    );
+    await shot(pageTitle, "startup-retry-now");
+    await stopApp();
+
+    const disabled = await launchSaved(remote, "pocket", { connectAtStartup: false });
+
+    await shown("Connect");
+    await sleep(2500);
+    assert.equal(
+        probes(),
+        disabled.probes,
+        "Connect at startup off suppressed even the initial probe",
+    );
+    assert.equal(pages(), disabled.pages);
+    await connect("Connect");
+    await until("explicit Connect worked with auto-connect off", () => pages() > disabled.pages);
+    await stopApp();
+
+    const other = await fixture();
+
+    try {
+        const switching = await launchSaved(remote, "down");
+
+        await until(
+            "startup retry was active before switching servers",
+            () => probes() >= switching.probes + 2,
+        );
+        await gui("click", settingsTitle, 390, 384); // The saved Server address field.
+        await gui("selectAll", settingsTitle);
+        await gui("type", settingsTitle, other.address);
+        await gui("expect-field", settingsTitle, other.address);
+        await connect("Connect");
+        await until(
+            "the new server replaced the pending startup connection",
+            () => pages(other) > 0,
+        );
+        const switched = probes();
+
+        remote.setMode("pocket");
+        await sleep(2500);
+        assert.equal(probes(), switched, "changing servers canceled the old startup retry");
+        assert.equal(pages(), switching.pages, "the old server did not replace the new page");
+        await stopApp();
+
+        await launchSaved(other, "down");
+        await shown("Retry now");
+        await stopApp();
+        const stopped = probes(other);
+
+        other.setMode("pocket");
+        await sleep(2500);
+        assert.equal(probes(other), stopped, "Quit canceled the saved-server retry");
+    } finally {
+        await other.close();
+    }
+
+    await noLocalServer();
+    console.log(
+        "The installed app passed active recovery, interval 0, Retry now, startup opt-out, server change, and Quit.",
+    );
+}
+
 try {
     await mkdir(out, { recursive: true });
 
@@ -260,8 +418,8 @@ try {
     );
 
     await testBridge({ remote, gui, until, prefs, waitForSettings, shot, out, stateFolder });
-    await quit();
-    await until("Quit ended the app", () => exited(app));
+    await stopApp();
+    await testStartupRetry();
     console.log("The installed app passed the offline Settings and remote Home smoke test.");
 } finally {
     if (app && !exited(app)) {
