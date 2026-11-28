@@ -27,6 +27,10 @@ async function mountSettings(platform, currentSection) {
             },
             setAttribute() {},
             removeAttribute() {},
+            classList: { toggle() {} },
+            querySelector(selector) {
+                return this.children.find((child) => child.tag === selector);
+            },
             querySelectorAll() {
                 return this.children.flatMap((child) =>
                     child.name && (child.tag === "input" || child.tag === "select")
@@ -155,4 +159,21 @@ test("a native effect update does not replace opacity while the user edits it", 
     document.activeElement = null;
     await opacity.onchange();
     assert.equal(patches.at(-1).value.appearance.opacity, 28);
+});
+
+test("a window theme update keeps the Updates picker control available", async () => {
+    const { document, elements, patches, receive, state } = await mountSettings("macos", "updates");
+    const button = elements.find((element) => element.textContent === "Select installer…");
+    const updates = { ...state.updates, status: "downloading" };
+    const theme = { dark: true };
+
+    assert.ok(button.hidden);
+    receive({
+        type: "state",
+        state: { ...state, revision: 1, updates, window: { ...state.window, theme } },
+    });
+    assert.equal(document.documentElement.dataset.theme, "dark");
+    assert.ok(!button.hidden && !button.disabled);
+    await button.onclick();
+    assert.equal(patches.at(-1).value.id, "updates.selectInstaller");
 });

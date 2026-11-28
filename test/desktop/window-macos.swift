@@ -73,17 +73,17 @@ func axElement(_ value: CFTypeRef?) -> AXUIElement? {
     return (value as! AXUIElement)
 }
 
-func clickable(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> Bool {
+func target(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> AXUIElement? {
     func hasLabel(_ element: AXUIElement) -> Bool {
         [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
             axAttribute(element, $0) as? String == name
         }
     }
     var hit: AXUIElement?
-    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else { return false }
+    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else { return nil }
     var named = false
     for _ in 0..<8 {
-        guard let element = hit else { return false }
+        guard let element = hit else { return nil }
         named = named || hasLabel(element)
         let role = axAttribute(element, kAXRoleAttribute) as? String
         if role == kAXButtonRole || role == "AXLink" {
@@ -91,15 +91,15 @@ func clickable(at point: CGPoint, named name: String, in app: AXUIElement, windo
             let children = axAttribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
             guard enabled, named || children.contains(where: hasLabel),
                 let owner = axElement(axAttribute(element, kAXWindowAttribute)) ??
-                    axElement(axAttribute(element, kAXTopLevelUIElementAttribute)) else { return false }
-            return CFEqual(owner, window)
+                    axElement(axAttribute(element, kAXTopLevelUIElementAttribute)) else { return nil }
+            return CFEqual(owner, window) ? element : nil
         }
         hit = axElement(axAttribute(element, kAXParentAttribute))
     }
-    return false
+    return nil
 }
 
-func clickVerified(_ point: CGPoint, name: String) {
+func activateVerified(_ point: CGPoint, name: String, useAccessibility: Bool) {
     guard AXIsProcessTrusted() else {
         fputs("The window fixture needs accessibility read-back.\n", stderr)
         exit(1)
@@ -109,14 +109,20 @@ func clickVerified(_ point: CGPoint, name: String) {
     _ = AXUIElementSetMessagingTimeout(app, 0.5)
     let start = ProcessInfo.processInfo.systemUptime
 
-    // Finder or a Save sheet can leave WebKit without focus. Poll observations, then click once.
+    // Finder or a Save sheet can leave WebKit without focus. Poll observations before sending input.
     while ProcessInfo.processInfo.systemUptime - start < 8 {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
             let window = axElement(axAttribute(app, kAXFocusedWindowAttribute)),
             axAttribute(window, kAXRoleAttribute) as? String == kAXWindowRole,
-            clickable(at: point, named: name, in: app, window: window) {
-            click(point, source: source)
-            print("Window fixture: verified and clicked \(name).")
+            let item = target(at: point, named: name, in: app, window: window) {
+            if useAccessibility {
+                let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                guard result == .success else {
+                    fputs("Window fixture: could not press \(name): \(result.rawValue).\n", stderr)
+                    exit(1)
+                }
+            } else { click(point, source: source) }
+            print("Window fixture: verified and activated \(name).")
             return
         }
         Thread.sleep(forTimeInterval: 0.1)
@@ -130,11 +136,11 @@ case "count":
     print(pages.count)
 case "window-ids":
     print(ids.sorted().map { String($0) }.joined(separator: ","))
-case "click", "click-verified":
+case "click", "click-verified", "press-verified":
     guard let w = pages.first?.bounds else { exit(1) }
     let point = CGPoint(x: w.minX + Double(args[3])!, y: w.minY + Double(args[4])!)
-    if args[2] == "click-verified" { clickVerified(point, name: args[5]) }
-    else { click(point) }
+    if args[2] == "click" { click(point) }
+    else { activateVerified(point, name: args[5], useAccessibility: args[2] == "press-verified") }
 case "escape", "key", "hotkey":
     let source: CGEventSource
     if args[2] == "hotkey" {

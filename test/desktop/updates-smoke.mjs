@@ -227,7 +227,6 @@ async function exerciseUpdates(pid, fixture, downloaded) {
         if (win) {
             gui(pid, "select-file", "Select the downloaded desktop installer", file);
         } else {
-            await setTimeout(1000);
             gui(pid, "select-file", settingsTitle, file);
         }
     }
@@ -435,6 +434,15 @@ try {
     await writeFile(join(proof, "failure.txt"), `${error.stack}\n${error.stderr ?? ""}`).catch(
         () => {},
     );
+
+    if (!win) {
+        try {
+            // Keep the system sheet and the focused app in the diagnostic, not just Settings.
+            run("/usr/sbin/screencapture", ["-x", join(proof, "failure.png")]);
+        } catch {
+            // Keep the original failure if the display cannot be captured.
+        }
+    }
 
     for (const file of [
         log,

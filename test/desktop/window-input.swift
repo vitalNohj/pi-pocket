@@ -61,13 +61,19 @@ func named(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: 
     return nil
 }
 
+func waitForElement(_ description: String, timeout: TimeInterval, observe: () -> AXUIElement?) -> AXUIElement {
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    repeat {
+        if let item = observe() { return item }
+        Thread.sleep(forTimeInterval: 0.2)
+    } while ProcessInfo.processInfo.systemUptime < deadline
+    fail("Could not see \(description) in the installed app or menu bar.")
+}
+
 func waitForNamed(_ roots: [AXUIElement], _ name: String, role: String? = nil, prefix: Bool = false) -> AXUIElement {
-    let start = ProcessInfo.processInfo.systemUptime
-    while ProcessInfo.processInfo.systemUptime - start < 15 {
-        if let item = named(roots, name, role: role, prefix: prefix) { return item }
-        Thread.sleep(forTimeInterval: 0.25)
+    waitForElement("'\(name)' (\(role ?? "any role"))", timeout: 15) {
+        named(roots, name, role: role, prefix: prefix)
     }
-    fail("Could not see '\(name)' (\(role ?? "any role")) in the installed app or menu bar.")
 }
 
 func bounds(_ item: AXUIElement) -> CGRect? {
@@ -178,6 +184,47 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
         }
         event.post(tap: .cghidEventTap)
     }
+}
+
+func selectFile(_ path: String) {
+    guard AXIsProcessTrusted() else { fail("The file picker driver needs Accessibility permission.") }
+    let app = AXUIElementCreateApplication(pid)
+
+    func focus() -> AXUIElement? { elementAttribute(app, kAXFocusedUIElementAttribute) }
+
+    // The controller reports "selecting" before AppKit has presented the Open panel.
+    let panel = waitForElement("the installer Open sheet", timeout: 8) {
+        let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        guard let owner = windows.first(where: { hasName($0, title) }) else { return nil }
+        return (attribute(owner, kAXSheetsAttribute) as? [AXUIElement])?.first
+    }
+    prepareInput()
+    let previous = focus()
+    key(5, flags: [.maskCommand, .maskShift]) // Go to Folder
+    let pathField = waitForElement("the Go to Folder field", timeout: 5) {
+        guard let field = focus(), previous.map({ !CFEqual($0, field) }) ?? true,
+            let role = attribute(field, kAXRoleAttribute) as? String,
+            role == kAXTextFieldRole || role == kAXComboBoxRole else { return nil }
+        return field
+    }
+
+    let clipboard = NSPasteboard.general
+    clipboard.clearContents()
+    guard clipboard.setString(path, forType: .string) else { fail("Could not copy the fixture path.") }
+    key(9, flags: .maskCommand)
+    _ = waitForElement("the pasted fixture path", timeout: 5) {
+        guard let field = focus(), CFEqual(field, pathField),
+            attribute(field, kAXValueAttribute) as? String == path else { return nil }
+        return field
+    }
+    key(36) // Go to the file.
+    let open = waitForElement("the enabled Open button after Go to Folder", timeout: 6) {
+        guard let field = focus(), !CFEqual(field, pathField),
+            let button = named([panel], "Open", role: kAXButtonRole),
+            attribute(button, kAXEnabledAttribute) as? Bool == true else { return nil }
+        return button
+    }
+    press(open)
 }
 
 func capture(_ path: String, window: Int? = nil) throws {
@@ -317,17 +364,7 @@ case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])
 case "select-file":
-    prepareInput()
-    key(5, flags: [.maskCommand, .maskShift]) // Go to Folder in the open panel
-    Thread.sleep(forTimeInterval: 0.5)
-    let clipboard = NSPasteboard.general
-    clipboard.clearContents()
-    guard clipboard.setString(args[4], forType: .string) else { fail("Could not copy the fixture path.") }
-    key(9, flags: .maskCommand) // Paste the full path without dropping key events.
-    Thread.sleep(forTimeInterval: 0.5)
-    key(36) // Go to the file
-    Thread.sleep(forTimeInterval: 0.8)
-    key(36) // Open
+    selectFile(args[4])
 case "close":
     prepareInput()
     key(13, flags: .maskCommand) // Cmd+W
