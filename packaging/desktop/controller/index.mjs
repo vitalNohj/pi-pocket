@@ -10,7 +10,7 @@ import {
     packet,
     PIN_GLYPHS,
 } from "../protocol/index.mjs";
-import { initialState, preferenceRules } from "../protocol/state.mjs";
+import { choice, initialState, materials, preferenceRules } from "../protocol/state.mjs";
 import {
     allowedOrigins,
     connectionError,
@@ -20,6 +20,13 @@ import {
 } from "./connection/probe.mjs";
 import { diagnostics } from "./diagnostics/log.mjs";
 import { patchPreferences, readPreferences, savePreferences } from "./preferences.mjs";
+import {
+    importWindowPreferences,
+    loginSetting,
+    shortcutSetting,
+    validWindowStatus,
+    validWindowTheme,
+} from "./window-preferences.mjs";
 
 const localStates = ["stopped", "starting", "running", "error"];
 const unavailable = () => connectionError("unavailable", "This action is not available yet.");
@@ -62,6 +69,9 @@ export class DesktopController {
     #file;
     #write;
     #log;
+    #legacyWindowFile;
+    #themes = new Map();
+    #changingLogin = false;
     #subscribed = false;
     #pending = new Map();
     #actions = new Map();
@@ -82,6 +92,8 @@ export class DesktopController {
     constructor({ folder, platform, version, existingInstall, write }) {
         this.#state = initialState(platform, version, existingInstall);
         this.#file = join(folder, "desktop.json");
+        this.#legacyWindowFile = join(folder, "window.json");
+        this.#rules.appearance.material = choice(...materials[platform]);
         this.#write = write;
         this.#log = diagnostics(folder);
 
@@ -94,20 +106,14 @@ export class DesktopController {
             "window.pinned",
             (data) => onlyKeys(data, ["id", "feed"]) && pinId(data.id) && pinFeed(data.feed),
         );
-        this.registerHostCommand(
-            "window.preferences",
-            (data) =>
-                onlyKeys(data, Object.keys(this.#rules.window)) &&
-                Object.entries(data).every(([key, value]) => this.#rules.window[key](value)),
-        );
+        this.registerHostCommand("window.shortcut", shortcutSetting);
+        this.registerHostCommand("window.login.set", loginSetting);
+        this.registerHostCommand("window.login.prepare", noData);
+        this.registerAction("window.login.set", loginSetting, (data) => this.#setLogin(data));
 
         for (const action of HOST_COMMANDS.filter(
             (action) => !action.startsWith("local.") || action === "local.log",
         )) {
-            if (action === "window.preferences") {
-                continue;
-            }
-
             this.registerAction(action, this.#commands.get(action), (data) =>
                 this.#windowAction(action, data),
             );
@@ -151,10 +157,14 @@ export class DesktopController {
             saved.warnings.push("The saved server address is invalid. Choose a server on Home.");
         }
 
+        if (!saved.hasWindowPreferences) {
+            await importWindowPreferences(this.#legacyWindowFile, saved.preferences, this.#rules);
+        }
+
         this.#state.preferences = saved.preferences;
         this.#state.warnings = saved.warnings;
 
-        if (saved.missing) {
+        if (!saved.hasWindowPreferences && !saved.warnings.length) {
             await savePreferences(this.#file, this.#state.preferences).catch(() => {
                 this.#state.warnings.push("Desktop settings could not be saved.");
             });
@@ -415,6 +425,10 @@ export class DesktopController {
             onlyKeys(data, ["loginEnabled"]) &&
             typeof data.loginEnabled === "boolean"
         ) {
+            if (window.loginEnabled === data.loginEnabled) {
+                return true;
+            }
+
             window.loginEnabled = data.loginEnabled;
         } else if (
             event === "notifications" &&
@@ -431,6 +445,29 @@ export class DesktopController {
             ["unknown", "prompt", "allowed", "blocked"].includes(data.permission)
         ) {
             this.#state.notifications.permission = data.permission;
+        } else if (event === "window.status" && validWindowStatus(data)) {
+            if (Object.entries(data).every(([key, value]) => window[key] === value)) {
+                return true;
+            }
+
+            Object.assign(window, data);
+        } else if (
+            event === "window.theme" &&
+            onlyKeys(data, ["generation", "palette"]) &&
+            this.#state.home.active?.kind === "pocket" &&
+            this.#state.home.active.generation === data.generation &&
+            validWindowTheme(data.palette)
+        ) {
+            const { address } = this.#state.home.active;
+
+            this.#themes.delete(address);
+
+            if (this.#themes.size >= 8) {
+                this.#themes.delete(this.#themes.keys().next().value);
+            }
+
+            this.#themes.set(address, data.palette);
+            window.theme = data.palette;
         } else if (isRecord(data) && this.#state.home.active?.generation === data.generation) {
             if (
                 event === "page" &&
@@ -485,17 +522,23 @@ export class DesktopController {
         return [...new Set(origins.map(signInOrigin))];
     }
 
-    #save(transform) {
+    #save(transform, prepare) {
         const result = this.#saving.then(async () => {
-            const next = transform(this.#state.preferences);
+            const previous = this.#state.preferences;
+            const next = transform(previous);
 
             if (!next) {
                 throw invalid();
             }
 
+            const rollback = await prepare?.(previous, next);
+
             try {
                 await savePreferences(this.#file, next);
-            } catch {
+            } catch (error) {
+                this.#log("preferences.save", error.code || "error");
+                await rollback?.().catch(() => {});
+
                 throw connectionError("save", "Desktop settings could not be saved.");
             }
 
@@ -510,24 +553,64 @@ export class DesktopController {
     }
 
     async #patch(patch) {
-        await this.#save((previous) => {
-            const next = patchPreferences(previous, patch, this.#rules);
+        await this.#save(
+            (previous) => {
+                const next = patchPreferences(previous, patch, this.#rules);
 
-            if (next) {
-                next.home.allowedOrigins = this.#origins(next.home.allowedOrigins);
-            }
+                if (next) {
+                    next.home.allowedOrigins = this.#origins(next.home.allowedOrigins);
+                }
 
-            return next;
-        });
+                return next;
+            },
+            patch?.window &&
+                (async (previous, next) => {
+                    const old = previous.window;
+                    const wanted = next.window;
 
-        if (Object.hasOwn(patch, "window")) {
-            void this.callHost("window.preferences", this.#state.preferences.window).catch(
-                () => {},
-            );
-        }
+                    if (old.startHidden && !wanted.startHidden) {
+                        await this.callHost("window.login.prepare");
+                    }
+
+                    if (
+                        wanted.shortcutEnabled !== old.shortcutEnabled ||
+                        (wanted.shortcutEnabled && wanted.shortcut !== old.shortcut)
+                    ) {
+                        // The OS must accept the candidate before it replaces the saved binding.
+                        await this.callHost("window.shortcut", {
+                            enabled: wanted.shortcutEnabled,
+                            shortcut: wanted.shortcut,
+                        });
+
+                        return () =>
+                            this.callHost("window.shortcut", {
+                                enabled: old.shortcutEnabled,
+                                shortcut: old.shortcut,
+                            });
+                    }
+                }),
+        );
 
         if (Object.hasOwn(patch, "home")) {
             this.#monitor();
+        }
+    }
+
+    async #setLogin(data) {
+        if (this.#changingLogin) {
+            throw connectionError("busy", "Wait for the current login change to finish.");
+        }
+
+        this.#changingLogin = true;
+
+        try {
+            const enabled = await this.callHost("window.login.set", data);
+
+            if (!this.#report("platform", { loginEnabled: enabled }) || enabled !== data.enabled) {
+                throw connectionError("login", "The system did not change Launch at login.");
+            }
+        } finally {
+            this.#changingLogin = false;
         }
     }
 
@@ -626,6 +709,7 @@ export class DesktopController {
             allowedOrigins:
                 mode === "remote" ? [...this.#state.preferences.home.allowedOrigins] : [],
         };
+        this.#state.window.theme = kind === "pocket" ? (this.#themes.get(address) ?? null) : null;
         Object.assign(this.#state.page, {
             generation: this.#generation,
             committedOrigin: null,
@@ -693,6 +777,7 @@ export class DesktopController {
 
         if (this.#state.home.active?.mode === "local") {
             this.#state.home.active = null;
+            this.#state.window.theme = null;
             Object.assign(this.#state.page, {
                 pins: [],
                 pinFeed: null,

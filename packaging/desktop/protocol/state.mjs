@@ -6,6 +6,18 @@ export const choice =
 export const integer = (min, max) => (value) =>
     Number.isInteger(value) && value >= min && value <= max;
 
+export const effects = ["available", "unsupported", "page", "full-screen", "web-view"];
+export const materials = {
+    windows: ["acrylic", "mica"],
+    macos: ["window", "sidebar", "dark", "full-screen"],
+};
+
+// Canonical modifier order is shared with the Settings recorder. Require a non-Shift modifier.
+export const shortcut = (value) =>
+    typeof value === "string" &&
+    /^(Ctrl\+)?(Alt\+)?(Meta\+)?(Shift\+)?[A-Z0-9]$/.test(value) &&
+    /^(Ctrl|Alt|Meta)\+/.test(value);
+
 export function initialState(platform, version, existingInstall) {
     return {
         revision: 0,
@@ -26,7 +38,15 @@ export function initialState(platform, version, existingInstall) {
             visible: false,
             hung: false,
         },
-        window: { focused: false, loginEnabled: null, idle: false, suspended: false },
+        window: {
+            focused: false,
+            loginEnabled: null,
+            shortcutActive: null,
+            effect: "page",
+            theme: null,
+            idle: false,
+            suspended: false,
+        },
         runner: { status: "checking", label: "Checking link", working: false },
         updates: { status: "disabled", latest: null, message: null },
         dictation: { status: "unavailable", recording: false, canDictate: false, canCopy: false },
@@ -44,14 +64,20 @@ export function initialState(platform, version, existingInstall) {
             },
             window: {
                 closeToTray: true,
-                startHidden: true,
+                startHidden: existingInstall,
                 titleBar: existingInstall ? "system" : "seamless",
                 showMenuBar: false,
                 links: "app",
                 developerTools: false,
                 shortcutEnabled: false,
+                shortcut: platform === "macos" ? "Meta+Shift+P" : "Ctrl+Shift+P",
             },
-            appearance: { transparent: false, opacity: 82 },
+            appearance: {
+                transparent: false,
+                opacity: 82,
+                material: materials[platform][0],
+                trayStyle: "system",
+            },
             notifications: { enabled: true, sound: true, approve: "full", commandLimit: 120 },
             runner: {},
             updates: { checkAtStartup: true },
@@ -78,8 +104,13 @@ export const preferenceRules = {
         links: choice("app", "browser"),
         developerTools: boolean,
         shortcutEnabled: boolean,
+        shortcut,
     },
-    appearance: { transparent: boolean, opacity: integer(0, 100) },
+    appearance: {
+        transparent: boolean,
+        opacity: integer(0, 100),
+        trayStyle: choice("system", "pocket"),
+    },
     notifications: {
         enabled: boolean,
         sound: boolean,

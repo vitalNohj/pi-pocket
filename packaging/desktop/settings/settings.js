@@ -16,6 +16,8 @@
 
     const $ = (selector) => document.querySelector(selector);
     const content = $("#content");
+    const systemDark = matchMedia("(prefers-color-scheme: dark)");
+    const forcedColors = matchMedia("(forced-colors: active)");
 
     function call(command, value) {
         return new Promise((resolve, reject) => {
@@ -151,7 +153,7 @@
             applyState(await api.patchPreferences({ [section]: { [key]: value } }));
         } catch (error) {
             sayError(error.message);
-            render();
+            refresh();
         }
     }
 
@@ -163,6 +165,7 @@
         const first = !state;
 
         state = next;
+        applyTheme(state.window.theme);
 
         if (first) {
             card = state.preferences.home.mode === "remote" ? "remote" : "local";
@@ -248,6 +251,7 @@
     function selectField(label, group, name, values, disabled = false) {
         const control = options(values, state.preferences[group][name]);
 
+        control.name = name;
         control.disabled = disabled;
         control.onchange = () => patch(group, name, control.value);
 
@@ -257,6 +261,7 @@
     function number(label, group, name, min, max, disabled = false) {
         const control = element("input", "", {
             type: "number",
+            name,
             min,
             max,
             value: state.preferences[group][name],
@@ -924,6 +929,251 @@
         };
     }
 
+    function applyTheme(theme) {
+        const root = document.documentElement;
+        const site = forcedColors.matches ? null : theme;
+
+        root.dataset.theme = (site?.dark ?? systemDark.matches) ? "dark" : "light";
+    }
+
+    for (const query of [systemDark, forcedColors]) {
+        query.addEventListener("change", () => applyTheme(state?.window.theme));
+    }
+
+    applyTheme(null);
+
+    function refreshControls(panel, group) {
+        for (const input of panel.querySelectorAll("input[name], select[name]")) {
+            const value = state.preferences[group][input.name];
+
+            if (value === undefined) {
+                continue;
+            }
+
+            if (input.type === "checkbox") {
+                input.checked = value;
+            } else if (input.type !== "number" || input !== document.activeElement) {
+                // A native status update must not replace a number as the user types it.
+                input.value = value;
+            }
+        }
+    }
+
+    function describeShortcut(shortcut) {
+        return shortcut
+            .replace("Meta", state.platform === "macos" ? "Cmd" : "Win")
+            .replace("Alt", state.platform === "macos" ? "Option" : "Alt");
+    }
+
+    function recordedShortcutKey(event) {
+        if (state.platform === "macos") {
+            const physical = event.code.match(/^(?:Key([A-Z])|Digit(\d))$/);
+
+            return physical?.[1] ?? physical?.[2];
+        }
+
+        if (/^[a-zA-Z]$/.test(event.key)) {
+            return event.key.toUpperCase();
+        }
+
+        // WebView2 gives the Windows virtual key for the number row, even when key is punctuation.
+        // Do not use the physical position or turn a number pad digit into a number row binding.
+        const { keyCode } = event;
+
+        return keyCode >= 0x30 && keyCode <= 0x39 ? String.fromCharCode(keyCode) : undefined;
+    }
+
+    function windowOptions() {
+        let settingLogin = false;
+        let recording = false;
+        const login = element("input", "", { type: "checkbox", name: "launchAtLogin" });
+        const launch = element("label", "", { className: "check" });
+
+        launch.append(login, "Launch at login");
+
+        login.onchange = async () => {
+            settingLogin = true;
+            refresh();
+            sayError();
+
+            try {
+                await api.action("window.login.set", { enabled: login.checked });
+            } catch (error) {
+                sayError(error.message);
+            } finally {
+                settingLogin = false;
+                refresh();
+            }
+        };
+
+        const shortcutButton = action("", () => {
+            recording = !recording;
+            refresh();
+        });
+
+        shortcutButton.onblur = () => {
+            recording = false;
+            refresh();
+        };
+
+        shortcutButton.onkeydown = (event) => {
+            if (!recording || event.key === "Tab") {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (event.key === "Escape") {
+                recording = false;
+                refresh();
+
+                return;
+            }
+
+            const key = recordedShortcutKey(event);
+
+            if (!key || event.repeat || !(event.ctrlKey || event.altKey || event.metaKey)) {
+                return;
+            }
+
+            recording = false;
+            refresh();
+            void patch(
+                "window",
+                "shortcut",
+                [
+                    event.ctrlKey && "Ctrl",
+                    event.altKey && "Alt",
+                    event.metaKey && "Meta",
+                    event.shiftKey && "Shift",
+                    key,
+                ]
+                    .filter(Boolean)
+                    .join("+"),
+            );
+        };
+
+        const defaultKey = state.platform === "macos" ? "Meta+Shift+P" : "Ctrl+Shift+P";
+        const shortcutStatus = element("p", "", { className: "hint", role: "status" });
+        const shortcutButtons = element("div", "", { className: "actions" });
+
+        shortcutButtons.append(
+            shortcutButton,
+            action("Use default", () => patch("window", "shortcut", defaultKey)),
+        );
+        const controls = [
+            checkbox("Close to tray", "window", "closeToTray"),
+            launch,
+            checkbox("Start hidden at login", "window", "startHidden"),
+            element("p", "Login changes apply the next time you sign in to this computer.", {
+                className: "hint",
+            }),
+            selectField("Title bar", "window", "titleBar", [
+                ["seamless", "Seamless"],
+                ["system", "System"],
+            ]),
+        ];
+
+        if (state.platform === "windows") {
+            controls.push(checkbox("Show menu bar", "window", "showMenuBar"));
+        }
+
+        const settings = panel(
+            "Window options",
+            ...controls,
+            selectField("Links to Pi Pocket pages", "window", "links", [
+                ["app", "App window"],
+                ["browser", "System browser"],
+            ]),
+            checkbox("Global show/hide shortcut", "window", "shortcutEnabled"),
+            shortcutButtons,
+            shortcutStatus,
+            advanced(checkbox("Enable developer tools", "window", "developerTools")),
+        );
+
+        content.append(settings);
+
+        refresh = () => {
+            refreshControls(settings, "window");
+
+            if (!settingLogin) {
+                login.checked = state.window.loginEnabled === true;
+            }
+
+            login.disabled = settingLogin || state.window.loginEnabled === null;
+            shortcutButton.textContent = recording
+                ? "Press a shortcut…"
+                : `Change shortcut (${describeShortcut(state.preferences.window.shortcut)})`;
+            shortcutButton.setAttribute("aria-pressed", String(recording));
+            shortcutStatus.textContent = recording
+                ? "Use a letter or number with Ctrl, Alt or the system key. Esc cancels."
+                : state.preferences.window.shortcutEnabled && state.window.shortcutActive === false
+                  ? "This shortcut is not active. It may be in use by another app. Choose another shortcut."
+                  : "";
+            shortcutStatus.hidden = !shortcutStatus.textContent;
+        };
+    }
+
+    function appearanceOptions() {
+        const windows = state.platform === "windows";
+        const note = element("p", "", { className: "hint", role: "status" });
+        const controls = [
+            element(
+                "p",
+                "Desktop Settings follow the Pi Pocket theme. Without a Pi Pocket page, they use the system theme.",
+            ),
+            checkbox("See-through background", "appearance", "transparent"),
+            number("Opacity (%)", "appearance", "opacity", 0, 100),
+            selectField(
+                "Blur",
+                "appearance",
+                "material",
+                windows
+                    ? [
+                          ["acrylic", "Acrylic"],
+                          ["mica", "Mica"],
+                      ]
+                    : [
+                          ["window", "Window"],
+                          ["sidebar", "Sidebar"],
+                          ["dark", "Dark glass"],
+                          ["full-screen", "Full-screen"],
+                      ],
+            ),
+            note,
+        ];
+
+        if (windows) {
+            controls.push(
+                selectField("Tray menu style", "appearance", "trayStyle", [
+                    ["system", "Windows"],
+                    ["pocket", "Pi Pocket"],
+                ]),
+            );
+        }
+
+        const settings = panel("Desktop appearance", ...controls);
+
+        content.append(settings);
+
+        refresh = () => {
+            refreshControls(settings, "appearance");
+            const text = {
+                unsupported: windows
+                    ? "See-through needs Windows 11 version 22H2 or later, with transparency on and high contrast off."
+                    : "See-through is unavailable when Reduce Transparency or Increase Contrast is on.",
+                page: "See-through applies to supported Pi Pocket pages, not Desktop Settings or sign-in pages.",
+                "full-screen": "See-through pauses in full screen.",
+                "web-view":
+                    "This version of macOS cannot make the Pi Pocket page see-through. The page uses a solid background.",
+            };
+
+            note.textContent = text[state.window.effect] ?? "";
+            note.hidden = !note.textContent;
+        };
+    }
+
     const coming = () => element("p", "More options are coming soon.", { className: "hint" });
 
     function dictation() {
@@ -1051,53 +1301,8 @@
         runner: runnerCard,
         updates,
         dictation,
-        window: () => {
-            const controls = [
-                checkbox("Close to tray", "window", "closeToTray"),
-                checkbox("Start hidden at sign-in", "window", "startHidden", true),
-                selectField(
-                    "Title bar",
-                    "window",
-                    "titleBar",
-                    [
-                        ["seamless", "Seamless"],
-                        ["system", "System"],
-                    ],
-                    true,
-                ),
-            ];
-
-            if (state.platform === "windows") {
-                controls.push(checkbox("Show menu bar", "window", "showMenuBar"));
-            }
-
-            controls.push(
-                selectField(
-                    "Links to Pi Pocket pages",
-                    "window",
-                    "links",
-                    [
-                        ["app", "App window"],
-                        ["browser", "System browser"],
-                    ],
-                    true,
-                ),
-                checkbox("Global show/hide shortcut", "window", "shortcutEnabled", true),
-                advanced(checkbox("Enable developer tools", "window", "developerTools")),
-                coming(),
-            );
-            content.append(panel("Window options", ...controls));
-        },
-        appearance: () =>
-            content.append(
-                panel(
-                    "Desktop appearance",
-                    element("p", "Settings follow this computer's light or dark appearance."),
-                    checkbox("See-through background", "appearance", "transparent", true),
-                    number("Opacity (%)", "appearance", "opacity", 0, 100, true),
-                    coming(),
-                ),
-            ),
+        window: windowOptions,
+        appearance: appearanceOptions,
         notifications: () => {
             const permission = element("p", "", { className: "muted", role: "status" });
             const system = action("Open system settings", () =>

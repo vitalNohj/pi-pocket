@@ -9,8 +9,6 @@ namespace PiPocket
     {
         const int WM_HOTKEY = 0x0312;
         const uint NoRepeat = 0x4000;
-        public const uint DefaultModifiers = 0x0002 | 0x0004; // Ctrl + Shift
-        public const uint DefaultKey = 0x50; // P
         readonly Action toggle;
         int registered;
         uint previousModifiers, previousKey;
@@ -21,7 +19,30 @@ namespace PiPocket
             CreateHandle(new CreateParams { Parent = new IntPtr(-3) }); // HWND_MESSAGE
         }
 
-        public bool Bind(uint modifiers, uint key)
+        public bool Active { get { return registered != 0; } }
+
+        public bool Bind(string shortcut)
+        {
+            if (string.IsNullOrEmpty(shortcut)) { return false; }
+            string[] parts = shortcut.Split('+');
+            string key = parts[parts.Length - 1];
+            if (key.Length != 1 || !(key[0] >= 'A' && key[0] <= 'Z' || key[0] >= '0' && key[0] <= '9')) { return false; }
+            uint modifiers = 0;
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                switch (parts[i])
+                {
+                    case "Ctrl": modifiers |= 2; break;
+                    case "Alt": modifiers |= 1; break;
+                    case "Meta": modifiers |= 8; break;
+                    case "Shift": modifiers |= 4; break;
+                    default: return false;
+                }
+            }
+            return (modifiers & ~4u) != 0 && Bind(modifiers, key[0]);
+        }
+
+        bool Bind(uint modifiers, uint key)
         {
             if (registered != 0 && previousModifiers == modifiers && previousKey == key) { return true; }
 

@@ -4,6 +4,24 @@ import Cocoa
 
 let args = CommandLine.arguments
 let pid = pid_t(args[1])!
+if args[2] == "display-effects" {
+    let workspace = NSWorkspace.shared
+    print("Reduce Transparency: \(workspace.accessibilityDisplayShouldReduceTransparency)")
+    print("Increase Contrast: \(workspace.accessibilityDisplayShouldIncreaseContrast)")
+    exit(0)
+}
+if args[2] == "wallpaper" {
+    let image = URL(fileURLWithPath: args[3])
+    do {
+        for screen in NSScreen.screens {
+            try NSWorkspace.shared.setDesktopImageURL(image, for: screen, options: [:])
+        }
+    } catch {
+        fputs("Could not set runner wallpaper: \(error)\n", stderr)
+        exit(1)
+    }
+    exit(0)
+}
 typealias Window = (id: Int, layer: Int, bounds: CGRect)
 let windows = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [])
     .compactMap { entry -> Window? in
@@ -55,27 +73,33 @@ func axElement(_ value: CFTypeRef?) -> AXUIElement? {
     return (value as! AXUIElement)
 }
 
-func button(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> Bool {
-    var hit: AXUIElement?
-    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else { return false }
-    var named = false
-    for _ in 0..<8 {
-        guard let element = hit else { return false }
-        named = named || [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
+func target(at point: CGPoint, named name: String, in app: AXUIElement, window: AXUIElement) -> AXUIElement? {
+    func hasLabel(_ element: AXUIElement) -> Bool {
+        [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute].contains {
             axAttribute(element, $0) as? String == name
         }
-        if axAttribute(element, kAXRoleAttribute) as? String == kAXButtonRole {
-            guard named, axAttribute(element, kAXEnabledAttribute) as? Bool == true,
+    }
+    var hit: AXUIElement?
+    guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success else { return nil }
+    var named = false
+    for _ in 0..<8 {
+        guard let element = hit else { return nil }
+        named = named || hasLabel(element)
+        let role = axAttribute(element, kAXRoleAttribute) as? String
+        if role == kAXButtonRole || role == "AXLink" {
+            let enabled = (axAttribute(element, kAXEnabledAttribute) as? Bool) ?? (role == "AXLink")
+            let children = axAttribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+            guard enabled, named || children.contains(where: hasLabel),
                 let owner = axElement(axAttribute(element, kAXWindowAttribute)) ??
-                    axElement(axAttribute(element, kAXTopLevelUIElementAttribute)) else { return false }
-            return CFEqual(owner, window)
+                    axElement(axAttribute(element, kAXTopLevelUIElementAttribute)) else { return nil }
+            return CFEqual(owner, window) ? element : nil
         }
         hit = axElement(axAttribute(element, kAXParentAttribute))
     }
-    return false
+    return nil
 }
 
-func clickVerified(_ point: CGPoint, name: String) {
+func activateVerified(_ point: CGPoint, name: String, useAccessibility: Bool) {
     guard AXIsProcessTrusted() else {
         fputs("The window fixture needs accessibility read-back.\n", stderr)
         exit(1)
@@ -85,14 +109,20 @@ func clickVerified(_ point: CGPoint, name: String) {
     _ = AXUIElementSetMessagingTimeout(app, 0.5)
     let start = ProcessInfo.processInfo.systemUptime
 
-    // A Save sheet may be offscreen before WebKit's window takes input again. Poll observations, then click once.
+    // Finder or a Save sheet can leave WebKit without focus. Poll observations before sending input.
     while ProcessInfo.processInfo.systemUptime - start < 8 {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
             let window = axElement(axAttribute(app, kAXFocusedWindowAttribute)),
             axAttribute(window, kAXRoleAttribute) as? String == kAXWindowRole,
-            button(at: point, named: name, in: app, window: window) {
-            click(point, source: source)
-            print("Window fixture: verified and clicked \(name).")
+            let item = target(at: point, named: name, in: app, window: window) {
+            if useAccessibility {
+                let result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                guard result == .success else {
+                    fputs("Window fixture: could not press \(name): \(result.rawValue).\n", stderr)
+                    exit(1)
+                }
+            } else { click(point, source: source) }
+            print("Window fixture: verified and activated \(name).")
             return
         }
         Thread.sleep(forTimeInterval: 0.1)
@@ -106,16 +136,31 @@ case "count":
     print(pages.count)
 case "window-ids":
     print(ids.sorted().map { String($0) }.joined(separator: ","))
-case "click", "click-verified":
+case "click", "click-verified", "press-verified":
     guard let w = pages.first?.bounds else { exit(1) }
     let point = CGPoint(x: w.minX + Double(args[3])!, y: w.minY + Double(args[4])!)
-    if args[2] == "click-verified" { clickVerified(point, name: args[5]) }
-    else { click(point) }
-case "escape":
-    let source = focusedEventSource()
+    if args[2] == "click" { click(point) }
+    else { activateVerified(point, name: args[5], useAccessibility: args[2] == "press-verified") }
+case "escape", "key", "hotkey":
+    let source: CGEventSource
+    if args[2] == "hotkey" {
+        guard let global = CGEventSource(stateID: .hidSystemState) else { exit(1) }
+        source = global
+    } else { source = focusedEventSource() }
+    let key = args[2] == "escape" ? CGKeyCode(53) : CGKeyCode(args[3])!
+    var flags: CGEventFlags = []
+    for modifier in args.dropFirst(4) {
+        switch modifier {
+        case "command": flags.insert(.maskCommand)
+        case "shift": flags.insert(.maskShift)
+        case "control": flags.insert(.maskControl)
+        case "option": flags.insert(.maskAlternate)
+        default: exit(1)
+        }
+    }
     for down in [true, false] {
-        guard let event = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: down) else { exit(1) }
-        event.flags = []
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down) else { exit(1) }
+        event.flags = flags
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.15)
     }

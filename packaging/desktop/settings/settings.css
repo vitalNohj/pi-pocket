@@ -1,5 +1,5 @@
 :root {
-    color-scheme: light dark;
+    color-scheme: light;
     --ground: #f4f6f9;
     --panel: #fff;
     --sidebar: #e9edf3;
@@ -14,19 +14,18 @@
         15px/1.5 system-ui,
         sans-serif;
 }
-@media (prefers-color-scheme: dark) {
-    :root {
-        --ground: #1a1e28;
-        --panel: #242a37;
-        --sidebar: #202532;
-        --text: #eff2fa;
-        --quiet: #b3bdd0;
-        --line: #505971;
-        --accent: #a6b6ff;
-        --on-accent: #151c38;
-        --selected: #353f60;
-        --alert: #ffb2c3;
-    }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #1a1e28;
+    --panel: #242a37;
+    --sidebar: #202532;
+    --text: #eff2fa;
+    --quiet: #b3bdd0;
+    --line: #505971;
+    --accent: #a6b6ff;
+    --on-accent: #151c38;
+    --selected: #353f60;
+    --alert: #ffb2c3;
 }
 * {
     box-sizing: border-box;

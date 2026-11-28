@@ -1,45 +1,30 @@
-import Cocoa
+// A typed copy of the desktop controller snapshot. The controller alone writes desktop.json.
+struct WindowPreferences: Equatable {
+    var seamless = false
+    var closeToTray = true
+    var startHidden = false
+    var externalPages = false
+    var shortcutEnabled = false
+    var shortcut = "Meta+Shift+P"
+    var seeThrough = false
+    var tint = 82
+    var material = "window"
+    var developerTools = false
 
-// A window adapter's state, separate from server config and the WebView profile.
-struct WindowPreferences: Codable {
-    var titleBar: String? = nil
-    var closeToTray: Bool? = nil
-    var startHidden: Bool? = nil
-    var externalPages: Bool? = nil
-    var globalShortcut: Bool? = nil
-    var seeThrough: Bool? = nil
-    var opacity: Int? = nil
-    var material: String? = nil
-    var developerTools: Bool? = nil
+    init() {}
 
-    static var file: URL {
-        if let path = ProcessInfo.processInfo.environment["PI_POCKET_DESKTOP_STATE"], !path.isEmpty {
-            return URL(fileURLWithPath: path).appendingPathComponent("window.json")
-        }
-
-        return appFolder.appendingPathComponent("desktop/window.json")
-    }
-
-    var seamless: Bool { titleBar != "system" }
-    var tint: Int { opacity.flatMap { (0...100).contains($0) ? $0 : nil } ?? 82 }
-
-    static func load() -> WindowPreferences {
-        if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 4096,
-            let data = try? Data(contentsOf: file), let saved = try? JSONDecoder().decode(Self.self, from: data)
-        {
-            return saved
-        }
-
-        var defaults = Self()
-        if UserDefaults.standard.string(forKey: "NSWindow Frame Pi Pocket") != nil {
-            defaults.titleBar = "system"
-        }
-        return defaults
-    }
-
-    func save() throws {
-        let file = Self.file
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(self).write(to: file, options: .atomic)
+    init(_ prefs: [String: Any]) {
+        let window = prefs["window"] as? [String: Any] ?? [:]
+        let appearance = prefs["appearance"] as? [String: Any] ?? [:]
+        seamless = window["titleBar"] as? String == "seamless"
+        closeToTray = window["closeToTray"] as? Bool ?? true
+        startHidden = window["startHidden"] as? Bool ?? false
+        externalPages = window["links"] as? String == "browser"
+        shortcutEnabled = window["shortcutEnabled"] as? Bool ?? false
+        shortcut = window["shortcut"] as? String ?? "Meta+Shift+P"
+        developerTools = window["developerTools"] as? Bool ?? false
+        seeThrough = appearance["transparent"] as? Bool ?? false
+        tint = appearance["opacity"] as? Int ?? 82
+        material = appearance["material"] as? String ?? "window"
     }
 }

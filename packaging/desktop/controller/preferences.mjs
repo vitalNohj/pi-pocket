@@ -1,7 +1,29 @@
-import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import fs, { mkdir, open, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isRecord, MAX_PACKET_BYTES } from "../protocol/index.mjs";
+
+const replaceDelays = [30, 60, 120, 240];
+
+async function replace(source, target) {
+    // Windows readers and antivirus can briefly block replacement. Keep the old file
+    // intact while retrying, and do not retry permanent format or path errors.
+    for (const ms of replaceDelays) {
+        try {
+            await fs.rename(source, target);
+            return;
+        } catch (error) {
+            if (!["EACCES", "EBUSY", "EPERM"].includes(error.code)) {
+                throw error;
+            }
+        }
+
+        await delay(ms);
+    }
+
+    await fs.rename(source, target);
+}
 
 export async function readPreferences(file, defaults, rules) {
     const preferences = structuredClone(defaults);
@@ -70,7 +92,12 @@ export async function readPreferences(file, defaults, rules) {
         }
     }
 
-    return { preferences, warnings, missing: false };
+    return {
+        preferences,
+        warnings,
+        missing: false,
+        hasWindowPreferences: stored.windowPreferencesVersion === 1,
+    };
 }
 
 export function patchPreferences(previous, patch, rules) {
@@ -98,7 +125,7 @@ export function patchPreferences(previous, patch, rules) {
 }
 
 export async function savePreferences(file, preferences) {
-    const content = `${JSON.stringify({ schemaVersion: 1, preferences }, null, 4)}\n`;
+    const content = `${JSON.stringify({ schemaVersion: 1, windowPreferencesVersion: 1, preferences }, null, 4)}\n`;
 
     if (Buffer.byteLength(content) > MAX_PACKET_BYTES) {
         throw new Error("Settings file too large");
@@ -110,7 +137,7 @@ export async function savePreferences(file, preferences) {
 
     try {
         await writeFile(temp, content, { flag: "wx", mode: 0o600 });
-        await rename(temp, file);
+        await replace(temp, file);
     } finally {
         await rm(temp, { force: true }).catch(() => {});
     }

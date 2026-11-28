@@ -5,6 +5,7 @@ Add-Type @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class NativeWindowFixture {
     [StructLayout(LayoutKind.Sequential)] public struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
@@ -14,12 +15,24 @@ public static class NativeWindowFixture {
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr w);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr w);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr w, out Rect r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr w, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr w, ref Point p);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr w);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr w, int command);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr w, uint message, IntPtr wParam, IntPtr lParam);
+    // A raw WM_CLOSE can be classified as TaskManagerClosing, not a user title-bar close.
+    public static bool Close(IntPtr w) { return PostMessage(w, 0x0112, new IntPtr(0xf060), IntPtr.Zero); }
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out Rect bounds, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr w, int attribute, out int value, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr w, StringBuilder text, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool SystemParametersInfo(uint action, uint param, string value, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeout(IntPtr w, uint message, IntPtr wp, string lp, uint flags, uint timeout, out IntPtr result);
+    public static void RefreshDesktopColors() {
+        IntPtr result;
+        SendMessageTimeout(new IntPtr(0xffff), 0x001a, IntPtr.Zero, "ImmersiveColorSet", 2, 100, out result);
+    }
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
     public static IntPtr[] Windows(int process) {
@@ -34,6 +47,20 @@ public static class NativeWindowFixture {
             return true;
         }, IntPtr.Zero);
         return windows.ToArray();
+    }
+    public static string Title(IntPtr w) {
+        var text = new StringBuilder(200);
+        GetWindowText(w, text, text.Capacity);
+        return text.ToString();
+    }
+    public static int FrameTop(IntPtr w) {
+        Rect rect;
+        var origin = new Point();
+        return GetWindowRect(w, out rect) && ClientToScreen(w, ref origin) ? origin.Y - rect.Top : -1;
+    }
+    public static int Backdrop(IntPtr w) {
+        int value;
+        return DwmGetWindowAttribute(w, 38, out value, 4) == 0 ? value : 0;
     }
     public static void Click(IntPtr w, int x, int y) {
         var p = new Point { X = x, Y = y };
@@ -84,6 +111,31 @@ function Screenshot($file) {
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
+function Open-Settings($app, $window) {
+    [void][NativeWindowFixture]::SetForegroundWindow($window)
+    [System.Windows.Forms.SendKeys]::SendWait('^{,}')
+    Wait-For 'open Desktop Settings' { [NativeWindowFixture]::Windows($app.Id) | Where-Object { [NativeWindowFixture]::Title($_) -like 'Desktop Settings*' } }
+    Start-Sleep -Seconds 1
+    $settingsWindow = [NativeWindowFixture]::Windows($app.Id) | Where-Object { [NativeWindowFixture]::Title($_) -like 'Desktop Settings*' } | Select-Object -First 1
+    [void][NativeWindowFixture]::SetForegroundWindow($settingsWindow)
+    return $settingsWindow
+}
+
+function Saved($section, $name, $value) {
+    # Do not hold the file against atomic replacement while polling it.
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $reader = [IO.StreamReader]::new([IO.File]::Open($preferences, 'Open', 'Read', $share))
+    try {
+        $saved = $reader.ReadToEnd() | ConvertFrom-Json
+        return $saved.preferences.$section.$name -eq $value
+    } finally { $reader.Dispose() }
+}
+
+function Settings-Select($handle, $y, $keys) {
+    [NativeWindowFixture]::Click($handle, 450, $y)
+    [System.Windows.Forms.SendKeys]::SendWait($keys + '{ENTER}')
+}
+
 $appExe = Join-Path $env:APP 'Pi Pocket.exe'
 $log = Join-Path $env:APP 'launcher.log'
 $page = Join-Path (Split-Path $env:MANIFEST) 'web\app.js'
@@ -91,10 +143,7 @@ $out = Join-Path $env:RUNNER_TEMP 'window-evidence'
 $env:PI_POCKET_DESKTOP_STATE = Join-Path $env:RUNNER_TEMP 'window-state'
 $env:PI_POCKET_DIR = Join-Path $env:RUNNER_TEMP 'window-data'
 New-Item -ItemType Directory -Force $out, $env:PI_POCKET_DESKTOP_STATE | Out-Null
-# Select local Home only in the fixture. A real fresh install must show both choices.
-Set-Content -LiteralPath (Join-Path $env:PI_POCKET_DESKTOP_STATE 'desktop.json') -Encoding utf8NoBOM `
-    -Value '{"schemaVersion":1,"preferences":{"home":{"mode":"local"}}}'
-$preferences = Join-Path $env:PI_POCKET_DESKTOP_STATE 'window.json'
+$preferences = Join-Path $env:PI_POCKET_DESKTOP_STATE 'desktop.json'
 $downloads = Join-Path $env:USERPROFILE 'Downloads'
 New-Item -ItemType Directory -Force $downloads | Out-Null
 $existing = Join-Path $downloads 'window-fixture.txt'
@@ -105,7 +154,10 @@ try {
     node "${PSScriptRoot}/window-fixture.mjs" $env:MANIFEST (Join-Path $env:RUNNER_TEMP 'window-files')
     if ($LASTEXITCODE -ne 0) { throw 'Could not prepare the window fixture' }
     foreach ($chrome in @('system', 'seamless')) {
-        @{ titleBar = $chrome } | ConvertTo-Json -Compress | Set-Content $preferences -Encoding utf8NoBOM
+        # The existing chrome/download proof covers both styles. The Settings proof changes these with the UI.
+        @{ schemaVersion = 1; windowPreferencesVersion = 1; preferences = @{
+            home = @{ mode = 'local' }; window = @{ titleBar = $chrome }
+        } } | ConvertTo-Json -Depth 4 -Compress | Set-Content $preferences -Encoding utf8NoBOM
         if (Test-Path $log) { Move-Item -Force $log (Join-Path $env:RUNNER_TEMP "window-before-$chrome.log") }
         $app = Start-Process -FilePath $appExe -PassThru
         Wait-For 'sign in' { (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log) }
@@ -130,7 +182,12 @@ try {
                 (Get-Content -Raw $existing).Trim() -ne 'Keep the existing file') { throw 'The saved file or the existing file is wrong' }
             Start-Sleep -Seconds 2 # Let Explorer reveal the saved file before the capture.
             Screenshot 'download'
-            [void][NativeWindowFixture]::SetForegroundWindow($window)
+            # Explorer takes foreground when it reveals the file. A click in the exposed sidebar
+            # restores real user focus even when Windows declines SetForegroundWindow.
+            if ([NativeWindowFixture]::GetForegroundWindow() -ne $window) {
+                [NativeWindowFixture]::Click($window, 20, 72)
+                Wait-For 'return focus from Explorer to Pi Pocket' { [NativeWindowFixture]::GetForegroundWindow() -eq $window }
+            }
             [NativeWindowFixture]::Click($window, 752, 212)
             Wait-For 'open the Save dialog' { [NativeWindowFixture]::Windows($app.Id).Length -ge 2 }
             Screenshot 'save-dialog'
@@ -151,6 +208,8 @@ try {
         Request-Quit
         Wait-For 'quit' { $app.Refresh(); $app.HasExited }
     }
+    Move-Item -Force "$page.saved" $page
+    & "$PSScriptRoot/window-settings-windows.ps1"
     'System and Seamless; light and dark; native maximize; a second window; existing name kept; Save dialog cancelled.' |
         Set-Content (Join-Path $out 'assertions.txt')
 } catch {
@@ -162,6 +221,6 @@ try {
     if ($app -and -not $app.HasExited) {
         try { Request-Quit } catch { Write-Warning $_.Exception.Message }
     }
-    Move-Item -Force "$page.saved" $page
+    if (Test-Path "$page.saved") { Move-Item -Force "$page.saved" $page }
     Remove-Item -Force $existing, $completed -ErrorAction SilentlyContinue
 }

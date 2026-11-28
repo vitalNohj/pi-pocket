@@ -420,8 +420,8 @@ jobs:
                       exit 1
                   fi
 
-            - name: Check native window and download fixtures
-              timeout-minutes: 5
+            - name: Check native windows, Desktop Settings, and downloads
+              timeout-minutes: 8
               run: bash test/desktop/window-macos.sh
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

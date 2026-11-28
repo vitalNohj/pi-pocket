@@ -66,12 +66,14 @@ EOF
             exit 1
         fi
 
-        mv -f "$PLIST.tmp" "$PLIST"
+        mv -f "$PLIST.tmp" "$PLIST" || exit 1
+        # Keep the new item for the next sign-in; do not bootstrap it into the current session.
+        /bin/launchctl enable "gui/$(id -u)/$LABEL" 2>/dev/null || true
         echo "Pi Pocket starts when you sign in, from the next sign-in."
         ;;
     off)
         /bin/launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
-        rm -f "$PLIST" "$PLIST.tmp"
+        rm -f "$PLIST" "$PLIST.tmp" || exit 1
         echo "Pi Pocket does not start when you sign in."
         ;;
     status)

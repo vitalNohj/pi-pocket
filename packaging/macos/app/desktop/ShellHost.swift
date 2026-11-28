@@ -29,11 +29,8 @@ func pageOrigin(_ url: URL?) -> String? {
 
 extension AppDelegate {
     var prefs: [String: Any] { snapshot["preferences"] as? [String: Any] ?? [:] }
-    var shellWindowPrefs: [String: Any] { prefs["window"] as? [String: Any] ?? [:] }
-    var devTools: Bool {
-        windowPrefs.developerTools ?? (shellWindowPrefs["developerTools"] as? Bool == true || UserDefaults.standard.bool(forKey: "WebInspector"))
-    }
-    var closeToTray: Bool { windowPrefs.closeToTray ?? (shellWindowPrefs["closeToTray"] as? Bool ?? true) }
+    var devTools: Bool { windowPrefs.developerTools }
+    var closeToTray: Bool { windowPrefs.closeToTray }
     var activeHome: [String: Any] { snapshot["home"] as? [String: Any] ?? [:] }
     var assets: URL { Bundle.main.resourceURL!.appendingPathComponent("desktop-assets") }
     var stateFolder: URL {
@@ -60,8 +57,6 @@ extension AppDelegate {
                 if self.openWhenReady, !fresh, (self.prefs["home"] as? [String: Any])?["mode"] as? String != "local", self.page == nil {
                     self.openSettings("home")
                 }
-                let login = home.appendingPathComponent("Library/LaunchAgents/io.github.tannermidd.pi-pocket.plist")
-                self.report("platform", ["loginEnabled": files.fileExists(atPath: login.path)])
             }
         } catch { controllerFailed() }
     }
@@ -89,11 +84,13 @@ extension AppDelegate {
 
     func applySnapshot(_ next: [String: Any]) {
         if (next["revision"] as? Int ?? -1) < (snapshot["revision"] as? Int ?? -1) { return }
+        let first = snapshot.isEmpty
         snapshot = next
         let notices = prefs["notifications"] as? [String: Any] ?? [:]
         sessionBridge.notices.configure(enabled: notices["enabled"] as? Bool ?? true,
             sound: notices["sound"] as? Bool ?? true, mode: notices["approve"] as? String ?? "full",
             limit: notices["commandLimit"] as? Int ?? 120)
+        applySavedWindowPreferences(first: first)
         settings?.send(["v": 1, "type": "state", "state": next])
         let active = activeHome["active"] as? [String: Any] ?? [:]
         let nextPage = ShellPage(active)
@@ -117,10 +114,6 @@ extension AppDelegate {
         }
         pageStatus = status
         if openWhenReady, page == nil, (activeHome["local"] as? [String: Any])?["status"] as? String == "error" { openSettings("home") }
-        if #available(macOS 13.3, *) {
-            webView?.isInspectable = devTools
-            for window in popups.keys { (window as? PocketNativeWindow)?.chrome?.webView.isInspectable = devTools }
-        }
     }
 
     func closeSessionWindows(keepUnboundNewSession: Bool = false) {
@@ -141,6 +134,7 @@ extension AppDelegate {
         window = nil
         webView = nil
         notice = nil
+        applyWindowOptions()
     }
 
     func clearPageHandlers(_ view: WKWebView?) {
@@ -210,7 +204,11 @@ extension AppDelegate {
         case "window.minimize": NSApp.keyWindow?.miniaturize(nil)
         case "window.fullScreen": NSApp.keyWindow?.toggleFullScreen(nil)
         case "window.close": NSApp.keyWindow?.performClose(nil)
-        case "window.preferences": break
+        case "window.shortcut":
+            do { try setWindowHotkey(data["enabled"] as? Bool == true, data["shortcut"] as? String ?? "") }
+            catch { reply(.failure(error)); return }
+        case "window.login.set": WindowLogin.set(data["enabled"] as? Bool == true, completion: reply); return
+        case "window.login.prepare": WindowLogin.prepare(completion: reply); return
         case "notifications.refresh": sessionBridge.notices.refreshPermission()
         case "notifications.systemSettings":
             let pane = "x-apple.systempreferences:" + (ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 13
@@ -265,6 +263,7 @@ extension AppDelegate {
 
     func openSettings(_ section: String?) {
         if quitting { return }
+        refreshWindowLogin()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if settings == nil {

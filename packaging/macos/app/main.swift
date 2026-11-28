@@ -209,14 +209,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     let localStore = WKWebsiteDataStore.nonPersistent()
     let localQueue = DispatchQueue(label: "Pi Pocket local launcher")
     var local: LocalServer?
-    var windowPrefs = WindowPreferences.load()
+    var windowPrefs = WindowPreferences()
     var windowHotkey: WindowHotkey?
+    var windowEffect: String?
+    var readingWindowLogin = false
     lazy var windowDownloads = WindowDownloads { [weak self] in
         self?.sessionBridge.notices.local("Download complete.")
     }
     let windowKey = UUID().uuidString
-    lazy var openWhenReady = !CommandLine.arguments.contains("--hidden") &&
-        !(CommandLine.arguments.contains("--login") && (windowPrefs.startHidden ?? WindowLogin.legacyHidden))
+    let loginLaunch = CommandLine.arguments.contains("--login") && !CommandLine.arguments.contains("--hidden")
+    var openWhenReady = !CommandLine.arguments.contains("--hidden") && !CommandLine.arguments.contains("--login")
     var quitting = false
     var unattendedQuit = false
     var confirmingRunnerQuit = false
@@ -690,7 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         for action: WKNavigationAction, windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         if let url = action.request.url {
-            if inApp(url, from: webView.url) && !(windowPrefs.externalPages == true && sameOrigin(url)) {
+            if inApp(url, from: webView.url) && !(windowPrefs.externalPages && sameOrigin(url)) {
                 return popup(configuration)
             } else if ["http", "https", "mailto"].contains(url.scheme ?? "") {
                 NSWorkspace.shared.open(url)

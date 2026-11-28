@@ -58,7 +58,7 @@ namespace PiPocket
             if (IsDisposed || generation != host.PageGeneration) { return; }
             CoreWebView2 core = Browser;
             core.Settings.AreHostObjectsAllowed = false;
-            core.Settings.AreDevToolsEnabled = host.DeveloperTools;
+            core.Settings.AreDevToolsEnabled = host.NativeDeveloperTools;
             core.NavigationStarting += Navigate;
             core.ContentLoading += delegate (object sender, CoreWebView2ContentLoadingEventArgs args)
             {

@@ -61,6 +61,28 @@ namespace PiPocket
             }
         }
 
+        public static void UpdateLegacyShortcut()
+        {
+            if (!Enabled) { return; }
+            object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell", true));
+            object shortcut = null;
+            try
+            {
+                shortcut = Call(shell, "CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, Link);
+                string arguments = Call(shortcut, "Arguments", System.Reflection.BindingFlags.GetProperty) as string;
+                if (arguments == "--hidden")
+                {
+                    Call(shortcut, "Arguments", System.Reflection.BindingFlags.SetProperty, "--login");
+                    Call(shortcut, "Save", System.Reflection.BindingFlags.InvokeMethod);
+                }
+            }
+            finally
+            {
+                if (shortcut != null) { Marshal.FinalReleaseComObject(shortcut); }
+                Marshal.FinalReleaseComObject(shell);
+            }
+        }
+
         static object Call(object target, string member, System.Reflection.BindingFlags flags, params object[] args)
         {
             return target.GetType().InvokeMember(member, flags, null, target, args);

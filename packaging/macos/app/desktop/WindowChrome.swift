@@ -49,7 +49,10 @@ final class WindowChrome: NSView {
     private var palette: WindowPalette?
     private var knownPage = false
     private var lastGeometry = ""
+    private enum WebBackground { case solid, clear, unsupported }
+    private var webBackground = WebBackground.solid
     private var tint: Int?
+    var onEffect: ((String) -> Void)?
     var firstDownload: URL?
     var overlay: Bool { window?.styleMask.contains(.fullSizeContentView) == true && window?.styleMask.contains(.fullScreen) == false }
 
@@ -86,13 +89,28 @@ final class WindowChrome: NSView {
             window.titlebarAppearsTransparent = seamless
         }
         window.appearance = contrast ? nil : self.palette.flatMap { NSAppearance(named: $0.dark ? .darkAqua : .aqua) }
-        let glass = knownPage && preferences.seeThrough == true && !contrast &&
-            !workspace.accessibilityDisplayShouldReduceTransparency && !window.styleMask.contains(.fullScreen)
+        let noEffects = contrast || workspace.accessibilityDisplayShouldReduceTransparency
+        let fullScreen = window.styleMask.contains(.fullScreen)
+        let wantsGlass = knownPage && preferences.seeThrough && !noEffects && !fullScreen
+        let wanted: WebBackground = wantsGlass ? .clear : .solid
+        if webBackground != .unsupported, webBackground != wanted {
+            webBackground = PocketSetWebViewDrawsBackground(webView, !wantsGlass) ? wanted : .unsupported
+        }
+        let glass = webBackground == .clear
+        let status: String
+        if noEffects { status = "unsupported" }
+        else if fullScreen { status = "full-screen" }
+        else if !knownPage { status = "page" }
+        else if wantsGlass && !glass { status = "web-view" }
+        else { status = "available" }
+        onEffect?(status)
         switch preferences.material {
         case "sidebar": effect.material = .sidebar
         case "dark": effect.material = .hudWindow
         case "full-screen": effect.material = .fullScreenUI
-        default: effect.material = .windowBackground
+        default:
+            // Match the Electron app's "under-window" material.
+            effect.material = .underWindowBackground
         }
         tint = glass ? preferences.tint : nil
         window.isOpaque = !glass
