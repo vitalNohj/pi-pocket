@@ -73,6 +73,9 @@ jobs:
                   # npm's failure above is the expected one: it must not be the step's exit code.
                   exit 0
 
+            - name: Record the runner's existing WebView2 Runtime
+              run: ./test/desktop/webview2-windows.ps1 -Phase Record
+
             - name: Install silently
               run: |
                   $log = Join-Path $env:RUNNER_TEMP "setup.log"
@@ -126,7 +129,7 @@ jobs:
               run: |
                   & (Join-Path $env:APP "node\node.exe") --experimental-vm-modules test/desktop/dictation-smoke.mjs $env:MANIFEST (Join-Path $env:RUNNER_TEMP "dictation-models")
 
-            - name: Test Settings, Home, dictation and the desktop bridge in the installed app
+            - name: Build the Windows desktop input driver
               run: |
                   $driver = Join-Path $env:RUNNER_TEMP 'window-input.exe'
                   $source = Join-Path $env:GITHUB_WORKSPACE 'test\desktop\WindowInput.cs'
@@ -138,8 +141,26 @@ jobs:
                   & $csc /nologo /target:exe /platform:x64 /warnaserror+ /r:System.Windows.Forms.dll /r:System.Drawing.dll `
                       @automation "/out:$driver" $source
                   if ($LASTEXITCODE -ne 0) { throw 'Could not compile the Windows input driver' }
+
+            - name: Test Home and Desktop Settings with the app network blocked
+              timeout-minutes: 4
+              run: ./test/desktop/webview2-windows.ps1 -Phase OfflineHome -InputDriver (Join-Path $env:RUNNER_TEMP 'window-input.exe')
+
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: windows-webview2-offline-home
+                  path: |
+                      ${{ runner.temp }}/webview2-evidence/*.png
+                      ${{ runner.temp }}/webview2-evidence/runtime.txt
+                  if-no-files-found: ignore
+                  retention-days: 14
+
+            - name: Test Settings, Home, dictation and the desktop bridge in the installed app
+              run: |
                   node test/desktop/native-smoke.mjs (Join-Path $env:APP 'Pi Pocket.exe') `
-                      $driver (Join-Path $env:RUNNER_TEMP 'windows-home') (Join-Path $env:RUNNER_TEMP "dictation-models")
+                      (Join-Path $env:RUNNER_TEMP 'window-input.exe') (Join-Path $env:RUNNER_TEMP 'windows-home') `
+                      (Join-Path $env:RUNNER_TEMP 'dictation-models')
 
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
@@ -529,6 +550,9 @@ jobs:
                   $data = Join-Path $env:USERPROFILE ".pi-pocket"
                   if (-not (Test-Path $data)) { throw "A silent uninstall must keep the data folder $data" }
                   Write-Host "Uninstalled; the data folder $data stays."
+
+            - name: Confirm Setup, repair and uninstall kept the existing WebView2 Runtime
+              run: ./test/desktop/webview2-windows.ps1 -Phase Preserved
 
             - name: Show the logs
               if: failure()

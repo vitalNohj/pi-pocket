@@ -1,6 +1,5 @@
-# Builds Pi-Pocket-Setup-<version>.exe on Windows: the pinned Node.js zip, WebView2 SDK, and Inno Setup (each checked
-# against the SHA256 below), the desktop app, and the pi-pocket package (packaging/bundle-app.mjs), so Setup needs no npm
-# and no network.
+# Builds Pi-Pocket-Setup-<version>.exe on Windows: pinned Node.js, WebView2 SDK and Evergreen offline installers,
+# Inno Setup, the desktop app, and the pi-pocket package (packaging/bundle-app.mjs). Setup needs no npm or network.
 #
 #   pwsh packaging/windows/build.ps1 -Version 0.30.0 [-OutDir out] [-Source <checkout>] [-SignThumbprint <SHA1>]
 #
@@ -22,9 +21,16 @@ $ProgressPreference = "SilentlyContinue"
 # To move to another Node.js, take the win-x64.zip line of https://nodejs.org/dist/v<version>/SHASUMS256.txt.
 $NodeVersion = "26.13.1"
 $NodeSha256 = "e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7"
-# SHA256 of the Microsoft.Web.WebView2 package from nuget.org, not the separately installed Runtime.
+# The Microsoft.Web.WebView2 SDK from nuget.org, not the Runtime.
 $WebView2Version = "1.0.4370.26"
 $WebView2Sha256 = "1c0dacac84b70109b3fd42f90c53a0ba942abc3a87590d7a4e0ccd86e4a06cf4"
+# Use the direct URLs behind Microsoft's Evergreen Standalone Installer links (x64: 2124701, arm64: 2099616).
+# Pin the bytes of the full offline installers, not the moving fwlinks or the small online bootstrapper.
+$WebView2RuntimeSource = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files"
+$WebView2RuntimeX64 = "58f85fae-b5f5-4443-9b8d-6d4cf627d6f6/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+$WebView2RuntimeX64Sha256 = "45769d66809a9652050f8a91ab5329881b65cc4123fe7c733841deefbef91bf6"
+$WebView2RuntimeArm64 = "4f49ac14-882f-4840-ba6c-a46aae5eb1f0/MicrosoftEdgeWebView2RuntimeInstallerARM64.exe"
+$WebView2RuntimeArm64Sha256 = "c46b7c12d7d873c69593aeff33aa537f4bd372c2f89293be714b561b5ed8651a"
 # The SHA256 that https://github.com/jrsoftware/issrc/releases lists for the file.
 $InnoVersion = "7.1.1"
 $InnoSha256 = "8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0"
@@ -234,7 +240,11 @@ function Build-Setup([string[]]$Defines, [string]$Name) {
 }
 
 if (-not $DesktopOnly) {
-    Build-Setup -Defines @("/DNodeDir=$nodeDir", "/DAppDir=$appDir") -Name "Pi-Pocket-Setup"
+    $runtimeX64 = Join-Path $work "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+    $runtimeArm64 = Join-Path $work "MicrosoftEdgeWebView2RuntimeInstallerARM64.exe"
+    Get-Checked "$WebView2RuntimeSource/$WebView2RuntimeX64" $runtimeX64 $WebView2RuntimeX64Sha256
+    Get-Checked "$WebView2RuntimeSource/$WebView2RuntimeArm64" $runtimeArm64 $WebView2RuntimeArm64Sha256
+    Build-Setup -Defines @("/DNodeDir=$nodeDir", "/DAppDir=$appDir", "/DWebView2RuntimeDir=$work") -Name "Pi-Pocket-Setup"
 }
 
 if ($DesktopOnly -or $WithDesktopUpdate) {

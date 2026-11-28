@@ -51,7 +51,7 @@ namespace PiPocket
                     catch (NotImplementedException) { /* Older runtimes still have the menus. */ }
                 }
                 await view.EnsureCoreWebView2Async(environment, options);
-                WriteWebViewLog("The " + profile + " WebView2 controller is ready.");
+                WriteWebViewLog("The " + profile + " WebView2 controller is ready. Runtime: " + environment.BrowserVersionString + ".");
             }
             catch (Exception error)
             {
