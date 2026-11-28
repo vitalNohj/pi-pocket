@@ -897,7 +897,7 @@ export function AppearanceSheet() {
             <//>
             <${SettingRow}
                 title="Draw only rows near the screen (experimental)"
-                detail="On the next session open, draw fewer rows first. Use session Find to search all messages. Turn this off for browser Find or a screen reader."
+                detail="On the next session open, draw fewer rows first. Browser Find (Ctrl+F) and screen readers miss rows not yet drawn. Use session Find for all messages. Needs the Pocket look and a browser with scroll anchoring."
             >
                 <${Switch}
                     on=${p.nearRows === true}

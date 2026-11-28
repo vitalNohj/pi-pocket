@@ -80,6 +80,7 @@ import {
     html,
     Icon,
     iconPath,
+    MarkdownPresentation,
     modelLabel,
     shortPath,
     useEdge,
@@ -963,6 +964,7 @@ startSwipes((where) => {
     };
 });
 const root = document.getElementById("app");
+const draw = () => render(html`<${MarkdownPresentation}><${App} /><//>`, root);
 let queued = false;
 
 store.subscribe(() => {
@@ -973,10 +975,10 @@ store.subscribe(() => {
     queued = true;
     queueMicrotask(() => {
         queued = false;
-        render(html`<${App} />`, root);
+        draw();
     });
 });
-render(html`<${App} />`, root);
+draw();
 
 // A notification's link can ask for the chat: `/s/12?chat=1`.
 if (new URLSearchParams(location.search).has("chat")) {

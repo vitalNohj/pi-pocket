@@ -407,6 +407,60 @@ test(
 );
 
 test(
+    "Markdown cached for the transcript is invalidated by theme and access changes",
+    real,
+    async () => {
+        const id = await newSession(app);
+        const prompt = "Markdown scope: **a kept reply**";
+        const builds = () =>
+            inPage<number>(
+                `return JSON.stringify(openProbe.builds.filter((text) => text === ${JSON.stringify(`echo: ${prompt}`)}).length);`,
+            );
+
+        await say(app, id, prompt);
+        await openOn(id, "Markdown scope:");
+        await synced(id);
+        const before = await builds();
+
+        assert.ok(before > 0);
+
+        const change = (code: string) => inPage(`${code}; return 'null';`);
+
+        await change(`const { setPrefs, prefs } = await import('/theme.js');
+        window.oldColor = prefs().theme;
+        setPrefs({ theme: prefs().theme === 'gruvbox' ? 'tokyo-night' : 'gruvbox' })`);
+
+        try {
+            await until(
+                async () => (await builds()) === before + 1,
+                "new colors invalidate cached HTML",
+            );
+            await change(`const { store } = await import('/store.js');
+            window.oldReader = store.state.me;
+            store.set({ me: { ...window.oldReader, sessions: [${Number(id)}] } })`);
+            await until(
+                async () => (await builds()) === before + 2,
+                "changed access invalidates cached HTML",
+            );
+            await change(`(await import('/store.js')).store.set({ me: window.oldReader })`);
+            await until(
+                async () => (await builds()) === before + 3,
+                "old access does not reuse retained HTML",
+            );
+            assert.equal(
+                await inPage(
+                    `return JSON.stringify(document.querySelector('.reply strong')?.textContent);`,
+                ),
+                "a kept reply",
+            );
+        } finally {
+            await change(`if (window.oldReader) (await import('/store.js')).store.set({ me: window.oldReader });
+            (await import('/theme.js')).setPrefs({ theme: window.oldColor })`);
+        }
+    },
+);
+
+test(
     "the first layout preserves bottom placement and the reading position on switch, reload and device return",
     real,
     async () => {
@@ -535,7 +589,23 @@ test(
                     "device rows before sign-in checks",
                 );
                 assert.ok(me.entered);
-                checkRestore(await first(), "reading position in the first device layout");
+                // This base can reveal the cached root before its passive ResizeObserver attaches.
+                await until(async () => {
+                    const box = await position();
+
+                    return (
+                        Math.abs(
+                            box.top -
+                                Math.max(
+                                    0,
+                                    Math.min(
+                                        box.height - box.client,
+                                        box.height - (reading.height - reading.top),
+                                    ),
+                                ),
+                        ) <= 2
+                    );
+                }, "device reading position after the root is visible");
             } finally {
                 me.release();
             }
@@ -852,8 +922,8 @@ function experimental(on: boolean) {
     );
 }
 
-async function nearFixture(withLateContent = false) {
-    const id = await newSession(app);
+async function nearFixture(withLateContent = false, conversation?: ConversationId) {
+    const id = conversation ?? (await newSession(app));
     const ids: number[] = [];
     const word = (n: number) => `Near rows specimen ${String(n).padStart(2, "0")}.`;
     const lesson = withLateContent
@@ -1229,6 +1299,56 @@ test(
         }
     },
 );
+
+test("near rows preserves unread opening and entry jumps on the PiP board", real, async () => {
+    const pip = await app.pip.ensure(owner(app));
+    const { ids, last } = await nearFixture(false, pip);
+    const background = await newSession(app);
+
+    await say(app, background, "The session behind PiP");
+    await experimental(true);
+    await openOn(background, "The session behind PiP");
+
+    try {
+        await inPage(`
+            (await import('/theme.js')).setPrefs({ pip: 'board' });
+            (await import('/store.js')).setUnread(${Number(pip)}, true);
+            (await import('/pip.js')).openPip();
+            return 'null';
+        `);
+        await until(async () => (await shown(last)).rows, "PiP transcript");
+        await synced(pip);
+        await twoFrames();
+        const bottom = await scrollerState();
+
+        assert.ok(bottom.spacer && Math.abs(bottom.gap) < 2);
+        assert.equal(
+            await inPage(
+                `return JSON.stringify((await import('/store.js')).store.state.unread.includes(${Number(pip)}));`,
+            ),
+            false,
+        );
+        assert.equal(
+            await inPage(
+                `return JSON.stringify(await (await import('/chat.js')).jumpToEntry(${ids[0]}));`,
+            ),
+            true,
+        );
+        await until(
+            () =>
+                inPage<boolean>(
+                    `return JSON.stringify(!!document.querySelector('#entry-${ids[0]}.flash'));`,
+                ),
+            "jump to a PiP entry",
+        );
+        assert.equal((await scrollerState()).spacer, false);
+    } finally {
+        await inPage(
+            `(await import('/pip.js')).closePip(); (await import('/theme.js')).setPrefs({ pip: 'floating' }); return 'null';`,
+        );
+        await experimental(false);
+    }
+});
 
 test(
     "near rows keeps a reading anchor through a late image and KaTeX, then follows streaming",

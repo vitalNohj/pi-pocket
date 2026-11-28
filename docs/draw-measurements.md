@@ -123,6 +123,8 @@ Use CPUs available to the process and the local Chromium path. Stdout gives the 
 
 ### Draw fixes rerun (Stages A and B)
 
+The review kept Markdown reuse and the opt-in initial window, but removed the changes to the standard scroll placement and catch-up paths. The figures below describe the measured revisions, not a rerun after review.
+
 These are fresh matrices on `opti2`, not comparisons against the earlier study above. They use Node v24.15.0, Chromium 157.0.8103.50, CPUs 0–1, the 200% systemd scope, and the same viewports, fixtures, half-restored return cases, and trace endpoint. Each cell is **10 runs, median / p95 milliseconds**. Every measured endpoint was a `Paint`. Stage B used `--near-rows`; the extra wait for the priming tab to reach the bottom is outside the measured window.
 
 | Viewport | Entries | Open   |        Baseline |         Stage A |   Stage B, on |

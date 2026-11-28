@@ -595,6 +595,12 @@ export function motionLevel() {
 const reducedMotion = () => motionLevel() === "reduced";
 
 /** Put the current look on the page: variables, mode, and the switches style.css reads from data attributes. */
+let markdownLook;
+let lookRevision = 0;
+
+/** Changes when the effective colors or the versioned stylesheets change, not when unrelated preferences move. */
+export const markdownThemeRevision = () => lookRevision;
+
 export function apply() {
     const root = document.documentElement;
     const p = prefs();
@@ -653,6 +659,21 @@ export function apply() {
         density: p.density,
         width: WIDTHS[p.width] ? p.width : "comfortable",
     };
+
+    const look = JSON.stringify([
+        attrs.theme,
+        attrs.colors,
+        attrs.mode,
+        vars,
+        sheets ?? cached.css ?? [],
+    ]);
+
+    if (look !== markdownLook) {
+        markdownLook = look;
+        lookRevision++;
+        // System color changes can call apply without a store update. Notify after all styles are applied.
+        queueMicrotask(() => store.set({}));
+    }
 
     Object.assign(root.dataset, attrs);
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", vars["--o-bg"]);

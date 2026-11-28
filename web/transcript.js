@@ -1244,31 +1244,31 @@ function ToolStep({
     }, [status]);
     const details = full?.result?.details ?? result?.details ?? slot?.details;
     const args = (full?.call ?? call).args ?? {};
+    const resultText = full?.result?.text ?? result?.text;
+    // A long edit's diff reaches the browser cut short, as its start and end (`projection.ts`), with no other sign.
+    const diffClipped =
+        typeof details?.diff === "string" &&
+        /\n\n… \d+ characters not shown …\n\n/.test(details.diff);
+    const loadFull = () =>
+        attempt(async () => {
+            const assistant = await actions.fullEntry(entryId);
+            const fullCall = assistant.blocks?.find(
+                (block) => block.type === "toolCall" && block.id === call.id,
+            );
+            const fullResult =
+                (result?.clipped || diffClipped) && result
+                    ? await actions.fullEntry(result.id)
+                    : null;
+
+            setFull({ call: fullCall ?? call, result: fullResult });
+        });
+
     // An image a read returned is already on screen elsewhere: it shows only when the call is opened.
     const imagesInside = call.name === "read";
     let body = null;
 
-    // Only the summary and the always-visible extras draw closed. Build the rest in the same draw that opens it.
     if (open) {
-        const resultText = full?.result?.text ?? result?.text;
-        // A long edit's diff reaches the browser cut short, as its start and end (`projection.ts`), with no other sign.
-        const diffClipped =
-            typeof details?.diff === "string" &&
-            /\n\n… \d+ characters not shown …\n\n/.test(details.diff);
         const clipped = (call.clipped || result?.clipped || diffClipped) && !full;
-        const loadFull = () =>
-            attempt(async () => {
-                const assistant = await actions.fullEntry(entryId);
-                const fullCall = assistant.blocks?.find(
-                    (block) => block.type === "toolCall" && block.id === call.id,
-                );
-                const fullResult =
-                    (result?.clipped || diffClipped) && result
-                        ? await actions.fullEntry(result.id)
-                        : null;
-
-                setFull({ call: fullCall ?? call, result: fullResult });
-            });
         const parts = [];
 
         if (
@@ -2958,10 +2958,10 @@ function Items({ items, skip = 0, results, slots, approvals, busy, past = false,
         }
     });
 
-    const shown = skip > 0 ? items.slice(skip) : items;
-
-    return shown.flatMap((item, at) => {
-        const index = at + skip;
+    return items.flatMap((item, index) => {
+        if (index < skip) {
+            return [];
+        }
 
         if (item.type === "row") {
             return html`<${Memo} key=${item.key} deps=${rowDeps(item.entry)}>
@@ -3512,15 +3512,13 @@ const passing = (element) =>
  * Where the row the reader looks at is, before a draw changes the rows: at the bottom, the last row's lower edge; else
  * the first row in view, its top. In the scroller's layout, not as a glide moves it: by the column's own place.
  */
-function anchorOf(scroller, column, bottom, pending) {
+function anchorOf(scroller, column, bottom) {
     if (!scroller || !column) {
         return null;
     }
 
     const box = column.getBoundingClientRect();
-    const offset = column.offsetTop;
-    const top = pending === undefined ? scroller.scrollTop : restoredTop(scroller, pending);
-    const at = (y) => offset + (y - box.top) - top;
+    const at = (y) => column.offsetTop + (y - box.top) - scroller.scrollTop;
     const rows = [...column.children];
 
     if (bottom) {
@@ -3597,7 +3595,7 @@ function addedBelow(column, anchor) {
 }
 
 /** The same row's place now, as `anchorOf` measured it, or null when it is gone. */
-function placeOf(scroller, column, anchor, scrollTop = scroller.scrollTop) {
+function placeOf(scroller, column, anchor) {
     const entry = anchor.id === undefined ? anchor.row : document.getElementById(anchor.id);
 
     if (entry === null || !column.contains(entry)) {
@@ -3607,15 +3605,9 @@ function placeOf(scroller, column, anchor, scrollTop = scroller.scrollTop) {
     const box = column.getBoundingClientRect();
     const row = entry.getBoundingClientRect();
 
-    return column.offsetTop + ((anchor.bottom ? row.bottom : row.top) - box.top) - scrollTop;
-}
-
-/** The old window's position if real catch-up arrives before its first layout notification. */
-function restoredTop(element, keep) {
-    const height = element.scrollHeight;
-    const client = element.clientHeight;
-
-    return Math.max(0, Math.min(height - client, height - (keep ?? client)));
+    return (
+        column.offsetTop + ((anchor.bottom ? row.bottom : row.top) - box.top) - scroller.scrollTop
+    );
 }
 
 export function Transcript() {
@@ -3625,6 +3617,7 @@ export function Transcript() {
     const scroller = useRef(null);
     const gap = useRef(null);
     const followed = useRef(null);
+    const restoredNearTop = useRef(null);
     /** The column of rows in the scroller, whose growth keeps it at the bottom (below). */
     const column = useRef(null);
     // A kept session opens where the reader was in it (`transcriptPlace`), or at the bottom.
@@ -3664,19 +3657,14 @@ export function Transcript() {
     /** The catch-up's glide that runs, if one does, and where the scroller and the column were as it started. */
     const glide = useRef(null);
     const glideBase = useRef(null);
-    const laidOut = useRef(false);
-    const pendingPlacement = useRef(true);
-    const postLayout = useRef(null);
 
     /** Down to the bottom, the one without a glide's offset (`endOf`). */
     const toEnd = (element) => {
-        const top = endOf(element, column.current, glide.current, glideBase.current);
+        element.scrollTop = endOf(element, column.current, glide.current, glideBase.current);
 
         if (gap.current !== null) {
-            followed.current = top;
+            followed.current = element.scrollTop;
         }
-
-        element.scrollTop = top;
     };
 
     /**
@@ -3684,28 +3672,32 @@ export function Transcript() {
      * null at the bottom. Without a draw, and only while this session is the one shown, not as the tab leaves it.
      */
     function place(element) {
-        recordPlace(stick.current ? null : element.scrollHeight - element.scrollTop);
-    }
+        if (store.state.conversationId !== view.conversation?.id) {
+            return;
+        }
 
-    function recordPlace(keepNow) {
-        if (
-            store.state.conversationId === view.conversation?.id &&
-            (store.state.transcriptPlace?.keep ?? null) !== keepNow
-        ) {
+        const keepNow = stick.current ? null : element.scrollHeight - element.scrollTop;
+
+        if ((store.state.transcriptPlace?.keep ?? null) !== keepNow) {
             store.note({ transcriptPlace: keepNow === null ? null : { keep: keepNow } });
         }
     }
 
     function restorePlace(element) {
-        const height = element.scrollHeight;
-        const end = height - element.clientHeight;
-        const top = Math.max(0, Math.min(end, height - keep.current));
+        // An early cached view can draw while the app root is still hidden. Measure it on resize once it shows.
+        if (keep.current === null || element.clientHeight === 0) {
+            return;
+        }
+
+        element.scrollTop = element.scrollHeight - keep.current;
+
+        if (gap.current !== null) {
+            restoredNearTop.current = element.scrollTop;
+        }
 
         keep.current = null;
-        element.scrollTop = top;
-        recordPlace(height - top);
         // A restore to the very top fires no scroll event: the button back down shows from here.
-        setShowJump(end - top >= 60);
+        setShowJump(element.scrollHeight - element.clientHeight - element.scrollTop >= 60);
     }
 
     // Keep the snapshot's rows stable across unrelated UI updates, including scrolling the thought reading area. Only
@@ -3724,7 +3716,7 @@ export function Transcript() {
     const refreshed =
         drawnBuild.current != null && view.build != null && view.build !== drawnBuild.current;
     const reading =
-        refreshed && laidOut.current && column.current !== null
+        refreshed && column.current !== null
             ? refreshAnchor(scroller.current, column.current, new Set(rows.map((row) => row.id)))
             : null;
     const found =
@@ -3740,29 +3732,25 @@ export function Transcript() {
         () => itemsOf(rows.slice(start), partial, { from, talk }),
         [rows, start, partial, from, talk],
     );
-    // undefined before the first rows; null once showing whole. Do not remove mounted rows in this open session.
+    // Defer only an older prefix of the normal window. Once filled, never defer these rows again in this open session.
     const nearHead = useRef(undefined);
-    const [filled, fill] = useState(false);
-    // The position to restore when the estimated prefix is replaced with real rows.
+    const [, fill] = useState(false);
     const expansion = useRef(null);
     const { nearRows, look } = prefs();
-    // A theme can style rows by their DOM order. The placeholder must not change those styles.
     const near = nearRows === true && look === BASE_LOOK;
+    const canDefer = near && !rows.some((row) => row.presentation !== undefined);
 
     if (nearHead.current === undefined && !held && !missing && items.length > 0) {
-        // A hidden input can have no height (even no gap), and reveal or a change of presentation can open it.
-        // Without native scroll anchoring, do not guess how late images or math will move a reading position.
-        const supported =
-            near &&
-            CSS.supports("overflow-anchor", "auto") &&
-            !rows.some((row) => row.presentation !== undefined);
-        const index = supported ? firstNear(items, keep.current, innerHeight) : 0;
+        const index =
+            canDefer && CSS.supports("overflow-anchor", "auto")
+                ? firstNear(items, keep.current, innerHeight)
+                : 0;
 
         nearHead.current = index > 0 ? items[index].key : null;
     }
 
     const skip =
-        near && !filled && !refreshed && nearHead.current != null
+        canDefer && !refreshed && nearHead.current != null
             ? Math.max(
                   0,
                   items.findIndex((item) => item.key === nearHead.current),
@@ -3770,57 +3758,102 @@ export function Transcript() {
             : 0;
 
     if (skip === 0 && nearHead.current != null) {
-        if (!refreshed && !filled && gap.current !== null) {
+        if (!refreshed) {
             expansion.current = expansionPlace(scroller.current);
         }
 
         nearHead.current = null;
     }
 
-    /** Keep a real row, not a distance from the bottom (the jump button can appear in this draw). */
+    /** Preserve a real row outside the gap. Inside it (e.g. a scrollbar drag), keep the fraction of the prefix. */
     function expansionPlace(element) {
-        if (!element || keep.current !== null || stick.current) {
-            return {};
+        if (
+            gap.current === null ||
+            !element?.clientHeight ||
+            keep.current !== null ||
+            stick.current
+        ) {
+            return null;
         }
 
         const top = element.scrollTop;
+        const height = gap.current.offsetHeight;
+        const bottom = gapBottom();
+        const start = bottom - height;
+        const reading = top >= bottom ? anchorOf(element, column.current, false) : null;
 
-        return {
-            top,
-            reading: top > 1 ? anchorOf(element, column.current, false) : null,
-        };
+        return { top, start, height, reading, first: gap.current.nextElementSibling };
     }
 
-    function showAll(preserve) {
-        const element = scroller.current;
+    function gapBottom() {
+        const col = column.current;
 
-        if (gap.current === null || !element) {
+        return (
+            col.offsetTop +
+            gap.current.getBoundingClientRect().bottom -
+            col.getBoundingClientRect().top
+        );
+    }
+
+    function showAll(preserve = true) {
+        if (gap.current !== null && nearHead.current != null) {
+            expansion.current = preserve ? expansionPlace(scroller.current) : null;
+            nearHead.current = null;
+            fill(true);
+        }
+    }
+
+    // Do not spend a saved position on the estimate if the actual rows did not cover that position.
+    function fillForRestore(element) {
+        if (gap.current === null) {
+            return false;
+        }
+
+        const distance = keep.current ?? element.clientHeight;
+        const top = Math.max(0, element.scrollHeight - Math.max(distance, element.clientHeight));
+
+        if ((keep.current !== null || stick.current) && top < gapBottom()) {
+            showAll(false);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    function restoreExpansion(element) {
+        if (expansion.current === null || skip !== 0) {
             return;
         }
 
-        expansion.current = preserve ? expansionPlace(element) : null;
-        fill(true);
-    }
+        const { top, start, height, reading, first } = expansion.current;
 
-    /** Expand before a scroll or resize can bring the placeholder into view. Wide scroll jumps fill it too. */
-    function approachingGap(element, top) {
-        const spacer = gap.current;
-        const col = column.current;
+        expansion.current = null;
 
-        if (!spacer || !col) {
-            return false;
+        if (
+            anchor.current !== null ||
+            keep.current !== null ||
+            stick.current ||
+            !element.clientHeight
+        ) {
+            return;
         }
 
-        const bottom =
-            col.offsetTop + spacer.getBoundingClientRect().bottom - col.getBoundingClientRect().top;
+        const now = reading === null ? null : placeOf(element, column.current, reading);
 
-        if (top - bottom > element.clientHeight / 2) {
-            return false;
+        if (now !== null) {
+            element.scrollTop += now - reading.at;
+        } else if (top > start && height > 0 && first !== null && column.current.contains(first)) {
+            const afterPrefix = placeOf(element, column.current, { row: first });
+
+            element.scrollTop =
+                start + ((top - start) / height) * (afterPrefix + element.scrollTop - start);
+        } else {
+            element.scrollTop = top;
         }
 
-        showAll(true);
-
-        return true;
+        restoredNearTop.current = element.scrollTop;
+        setShowJump(element.scrollHeight - element.clientHeight - element.scrollTop >= 60);
     }
 
     const results = useMemo(() => {
@@ -3862,23 +3895,11 @@ export function Transcript() {
     }
 
     if (rows !== drawnRows.current) {
-        const previous = drawnRows.current;
-
-        // The whole-entry follow-up can replace the light entries before any layout. The same rows need only their
-        // final placement. Real new rows still glide from the kept view, even if the server answered in that frame.
         drawnRows.current = rows;
         anchor.current = refreshed
             ? reading
-            : catching() &&
-                (laidOut.current ||
-                    rows.length !== previous.length ||
-                    rows.some((row, index) => row.id !== previous[index].id))
-              ? anchorOf(
-                    scroller.current,
-                    column.current,
-                    stick.current,
-                    laidOut.current ? undefined : keep.current,
-                )
+            : catching()
+              ? anchorOf(scroller.current, column.current, stick.current)
               : null;
     }
 
@@ -3908,40 +3929,20 @@ export function Transcript() {
             setShowJump(false);
         }
 
-        if (expansion.current !== null && skip === 0 && element.clientHeight > 0) {
-            // ResizeObserver can request this fill. Restore in this commit, without waiting for another delivery.
-            const { reading, top } = expansion.current;
+        restoreExpansion(element);
 
-            expansion.current = null;
-
-            if (anchor.current === null) {
-                if (keep.current !== null) {
-                    restorePlace(element);
-                } else if (stick.current) {
-                    toEnd(element);
-                } else if (top !== undefined) {
-                    const height = element.scrollHeight;
-                    const end = height - element.clientHeight;
-                    const now = reading && placeOf(element, column.current, reading, 0);
-                    const placed = Math.max(0, Math.min(end, now == null ? top : now - reading.at));
-
-                    element.scrollTop = placed;
-                    recordPlace(height - placed);
-                    setShowJump(end - placed >= 60);
-                }
+        if (gap.current === null || !element.clientHeight || !fillForRestore(element)) {
+            if (keep.current !== null) {
+                restorePlace(element);
+            } else if (stick.current && anchor.current?.id === undefined) {
+                toEnd(element);
             }
-        }
 
-        if (anchor.current !== null) {
-            // A live catch-up or projection change uses the preceding DOM's anchor. Preserve that path; ordinary
-            // opens and redraws need not ask for geometry until the browser has laid out the new DOM.
             catchUp(element);
-        } else if (!pendingPlacement.current) {
-            pendingPlacement.current = true;
-            // Request one notification even for a commit that does not change the scroller's size. Several store
-            // commits before the frame only need one placement, from the final geometry.
-            postLayout.current?.unobserve(element);
-            postLayout.current?.observe(element);
+
+            if (element.clientHeight > 0) {
+                place(element);
+            }
         }
 
         counted.current = rows.length;
@@ -3974,84 +3975,70 @@ export function Transcript() {
      */
     function catchUp(element) {
         const before = anchor.current;
-        const col = column.current;
 
         anchor.current = null;
 
-        if (before === null || col === null || element.clientHeight === 0) {
+        if (before === null || column.current === null) {
             return;
         }
 
-        // Read the layout once, including the effect of the *proposed* scroll on the anchor. Scroll and animate only
-        // after reading it; neither a scroll write nor a glide cancellation is followed by another geometry read.
-        const client = element.clientHeight;
-        const height = element.scrollHeight;
-        const clamp = (top) => Math.max(0, Math.min(height - client, top));
-        const end = endOf(element, col, glide.current, glideBase.current);
-        const actual = element.scrollTop;
-        const saved = keep.current;
-        let top = clamp(
-            saved !== null
-                ? height - saved
-                : stick.current && before.id === undefined
-                  ? end
-                  : actual,
-        );
-        const placed = placeOf(element, col, before, top);
-        const added = before.bottom ? addedBelow(col, before) : 0;
-        const now = before.bottom && (placed === null || added > 0) ? before.at - added : placed;
-        const continueGlide =
-            before.bottom && before.at - now < 1 && glide.current?.playState === "running";
-        const from =
-            before.bottom && !continueGlide ? before.at - now + glideLeft(glide.current, col) : 0;
-        const animate = stick.current && from >= 1 && motionLevel() !== "reduced";
-        const columnHeight = animate ? col.offsetHeight : 0;
+        const placed = placeOf(element, column.current, before);
 
-        if (saved !== null) {
-            keep.current = null;
-            setShowJump(height - client - top >= 60);
+        if (placed === null && !before.bottom) {
+            return;
         }
 
-        if (!before.bottom && now !== null) {
+        // The row measured from was drawn again (or folded away): the glide goes by what came below, from where the end
+        // of the column was. It also goes by that when the row is still there and rows came after it, which a bottom
+        // anchor's own edge does not include. Without this a catch-up jumped there in one frame.
+        const now =
+            placed === null || (before.bottom && addedBelow(column.current, before) > 0)
+                ? before.at - addedBelow(column.current, before)
+                : placed;
+
+        if (!before.bottom) {
             // A browser that keeps the row in place by itself (scroll anchoring) has: then this moves nothing.
             if ((!stick.current || before.id !== undefined) && Math.abs(now - before.at) >= 1) {
-                top = clamp(top + now - before.at);
+                element.scrollTop += now - before.at;
             }
 
             if (before.id !== undefined) {
-                const atBottom = end - top < 60;
+                const atBottom =
+                    endOf(element, column.current, glide.current, glideBase.current) -
+                        element.scrollTop <
+                    60;
 
                 stick.current = atBottom && !jumping.current;
                 setShowJump(!atBottom);
             }
-        }
 
-        if (stick.current && gap.current !== null) {
-            followed.current = top;
-        }
-
-        if (top !== actual) {
-            element.scrollTop = top;
-        }
-
-        recordPlace(stick.current ? null : height - top);
-
-        if (!before.bottom || continueGlide) {
             return;
         }
 
-        // Up from where it was, continuing from what a previous glide still had left to go.
+        // Up from where it was, by what came below it: the column starts that far down, and glides up into place. What
+        // a glide still running had left to go goes on with this one.
+        // A draw that moved nothing (the whole entries for the light ones the session showed with): the glide goes on.
+        if (before.at - now < 1 && glide.current?.playState === "running") {
+            return;
+        }
+
+        const from = before.at - now + glideLeft(glide.current, column.current);
+
         glide.current?.cancel();
         glide.current = null;
         glideBase.current = null;
 
-        if (!animate) {
+        if (!stick.current || from < 1 || motionLevel() === "reduced") {
             return;
         }
 
-        const screens = Math.min(1, from / Math.max(1, client));
-        const running = col.animate(
-            [{ transform: `translateY(${Math.min(from, 2 * client)}px)` }, { transform: "none" }],
+        // Longer for more: from a line or two to a screen, then as long as it gets.
+        const screens = Math.min(1, from / Math.max(1, element.clientHeight));
+        const running = column.current.animate(
+            [
+                { transform: `translateY(${Math.min(from, 2 * element.clientHeight)}px)` },
+                { transform: "none" },
+            ],
             {
                 duration: Math.round(GLIDE_IN_MS + (GLIDE_LONG_MS - GLIDE_IN_MS) * screens),
                 easing: GLIDE_EASING,
@@ -4059,7 +4046,11 @@ export function Transcript() {
         );
 
         glide.current = running;
-        glideBase.current = { top, height: columnHeight, client };
+        glideBase.current = {
+            top: element.scrollTop,
+            height: column.current.offsetHeight,
+            client: element.clientHeight,
+        };
         // Landed: at the bottom, with what grew while it glided.
         running.finished.then(
             () => {
@@ -4068,10 +4059,10 @@ export function Transcript() {
                     glideBase.current = null;
 
                     if (stick.current) {
-                        if (gap.current === null) {
-                            element.scrollTop = element.scrollHeight;
-                        } else {
-                            toEnd(element);
+                        element.scrollTop = element.scrollHeight;
+
+                        if (gap.current !== null) {
+                            followed.current = element.scrollTop;
                         }
                     }
                 }
@@ -4123,9 +4114,8 @@ export function Transcript() {
 
     // The conversation gets shorter or taller as what is above the message box changes (the queue, the subagents' list,
     // a message box that grows), and its rows grow between draws (a card that draws late, a font that loads, a line
-    // under a reply): stay at the bottom if we were there, before the change shows. ResizeObserver runs after layout
-    // but before paint; unlike a layout effect or requestAnimationFrame, its first reads do not force layout mid-commit.
-    useLayoutEffect(() => {
+    // under a reply): stay at the bottom if we were there, before the change shows.
+    useEffect(() => {
         const element = scroller.current;
 
         if (!element) {
@@ -4167,30 +4157,14 @@ export function Transcript() {
             performance.now() - pressed < OPENED_MS &&
             changes.every((change) => change.target !== element);
         const observer = new ResizeObserver((changes) => {
-            // A checked device copy can commit before the signed-in root is unhidden. Leave its place pending.
-            if (element.clientHeight === 0) {
+            if (gap.current !== null && (!element.clientHeight || fillForRestore(element))) {
                 return;
-            }
-
-            laidOut.current = true;
-            const pending = pendingPlacement.current;
-
-            pendingPlacement.current = false;
-
-            if (gap.current !== null) {
-                const top =
-                    keep.current !== null || stick.current
-                        ? restoredTop(element, keep.current)
-                        : element.scrollTop;
-
-                if (approachingGap(element, top)) {
-                    return;
-                }
             }
 
             if (keep.current !== null) {
                 restorePlace(element);
-            } else if (stick.current && (pending || (!gliding() && !opened(changes)))) {
+                place(element);
+            } else if (stick.current && !gliding() && !opened(changes)) {
                 toEnd(element);
             } else if (!stick.current) {
                 // What grew below the reader: they are that much further from the bottom (`transcriptPlace`).
@@ -4198,7 +4172,6 @@ export function Transcript() {
             }
         });
 
-        postLayout.current = observer;
         element.addEventListener("touchstart", down, { passive: true });
         element.addEventListener("touchend", up, { passive: true });
         element.addEventListener("touchcancel", up, { passive: true });
@@ -4213,9 +4186,6 @@ export function Transcript() {
 
         return () => {
             observer.disconnect();
-            postLayout.current = null;
-            laidOut.current = false;
-            pendingPlacement.current = true;
             element.removeEventListener("touchstart", down);
             element.removeEventListener("touchend", up);
             element.removeEventListener("touchcancel", up);
@@ -4223,24 +4193,30 @@ export function Transcript() {
             element.removeEventListener("pointerdown", press, { capture: true });
             element.removeEventListener("keydown", press, { capture: true });
         };
-    }, [view.conversation?.id, held, Boolean(missing)]);
+    }, [view.conversation?.id]);
 
-    // Jumps need their target by chat.js's next frame. Selection and keyboard focus need a continuous DOM.
+    // A jump needs its target before chat.js's next frame. Native selection and keyboard focus need a continuous DOM.
     useLayoutEffect(() => {
         if (skip === 0) {
             return;
         }
 
         const reveal = () => showAll(false);
-        const select = () => showAll(true);
+
+        const select = (event) => {
+            if (scroller.current?.contains(event.target)) {
+                showAll();
+            }
+        };
 
         const key = (event) => {
             if (
                 event.key === "Tab" ||
-                (event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) ||
-                ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")
+                (!event.target.closest?.("input, textarea, [contenteditable]") &&
+                    ((event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) ||
+                        ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")))
             ) {
-                select();
+                showAll();
             }
         };
 
@@ -4318,28 +4294,30 @@ export function Transcript() {
         }
     }, [shells]);
 
-    const endThreshold = 60;
-
     const onScroll = () => {
-        if (!laidOut.current) {
+        const element = scroller.current;
+
+        if (
+            (gap.current !== null && (!element.clientHeight || keep.current !== null)) ||
+            (restoredNearTop.current !== null && element.scrollTop === restoredNearTop.current)
+        ) {
             return;
         }
 
-        const element = scroller.current;
+        restoredNearTop.current = null;
         // Not what a catch-up's glide has still to go: the reader is at the bottom it glides to.
-        const end = endOf(element, column.current, glide.current, glideBase.current);
-        const top = element.scrollTop;
-        const atBottom = end - top < endThreshold;
+        const atBottom =
+            endOf(element, column.current, glide.current, glideBase.current) - element.scrollTop <
+            60;
 
         if (
             !atBottom &&
             gap.current !== null &&
             stick.current &&
             followed.current !== null &&
-            Math.abs(top - followed.current) < endThreshold
+            Math.abs(element.scrollTop - followed.current) < 60
         ) {
-            // Between resize deliveries a browser can clamp the last scroll, then an image or the viewport grows.
-            // Still in the bottom band of the last placement: let the layout observer place the new bottom.
+            // A small clamp during resize is not the reader moving away from the bottom.
             return;
         }
 
@@ -4348,10 +4326,12 @@ export function Transcript() {
 
         if (gap.current !== null) {
             if (stick.current) {
-                followed.current = end;
+                followed.current = element.scrollTop;
             }
 
-            approachingGap(element, top);
+            if (element.scrollTop - gapBottom() < element.clientHeight / 2) {
+                showAll();
+            }
         }
 
         if (showJump === atBottom) {
@@ -4402,7 +4382,7 @@ export function Transcript() {
     };
 
     const showEarlier = () => {
-        showAll(false);
+        showAll();
 
         if (start >= TRANSCRIPT_ROWS || unloaded === 0) {
             keepPlace();
@@ -4458,7 +4438,7 @@ export function Transcript() {
         class="scroller"
         ref=${scroller}
         onScroll=${onScroll}
-        data-near-follow=${skip > 0 && !showJump ? "" : undefined}
+        data-near-follow=${skip > 0 && stick.current ? "" : undefined}
     >
         <div
             class=${`transcript ${entrance.current} ${catching() ? "catching" : ""}`}
@@ -4506,6 +4486,7 @@ export function Transcript() {
             ${
                 skip > 0 &&
                 html`<div
+                    key="near-gap"
                     class="near-gap"
                     ref=${gap}
                     aria-hidden="true"

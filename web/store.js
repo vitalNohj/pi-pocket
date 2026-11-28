@@ -1182,6 +1182,7 @@ function newestOf(view) {
  * left the list. Until the server answers again, a kept view could show what they may no longer see.
  */
 function forgetKept() {
+    accessRevision++;
     requestedViews.clear();
 
     if (waitingForView !== undefined) {
@@ -1266,6 +1267,7 @@ const accessOf = (me) => JSON.stringify([me.id, me.role, me.sessions ?? null]);
 const ownerOf = (me) => fingerprint(accessOf(me));
 
 const accessKeys = new WeakMap();
+let accessRevision = 0;
 let pagePerson;
 
 /** Scope rendered content to the same person and rights, including an early view checked against the signed-in page. */
@@ -1283,7 +1285,7 @@ export function renderAccess() {
         accessKeys.set(me, accessOf(me));
     }
 
-    return accessKeys.get(me);
+    return `${accessRevision}:${accessKeys.get(me)}`;
 }
 
 /** The view the device last saved for the session shown, and where the reader was then: not saved again unchanged. */

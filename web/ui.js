@@ -4,12 +4,13 @@ import DOMPurify from "dompurify";
 import htm from "htm";
 import { marked } from "marked";
 import { Component, createContext, h } from "preact";
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { useDragToClose } from "./gestures.js";
 import { highlight, langOf } from "./highlight.js";
 import { blockMath, inlineMath } from "./math.js";
 import { fenceFor, markdownRevision, mathFor, mathOn, mountMath } from "./markdown-ext.js";
 import { actions, filesShown, notify, openSheet, renderAccess, store } from "./store.js";
+import { markdownThemeRevision } from "./theme.js";
 
 // `this[0] = 3` stops htm from keeping the elements a template makes: a kept element keeps the app's tree it was first
 // drawn in, and through the rows of the session list, every tree after it. Templates stay parsed once.
@@ -531,6 +532,28 @@ purify.addHook("afterSanitizeAttributes", (node) => {
 const markdownCache = new Map();
 
 const MARKDOWN_CACHE = 500;
+let cacheScope;
+const MarkdownContext = createContext(null);
+
+function markdownScope() {
+    const scope = `${markdownThemeRevision()}:${renderAccess()}`;
+
+    if (scope !== cacheScope) {
+        markdownCache.clear();
+        cacheScope = scope;
+    }
+
+    return scope;
+}
+
+/** Let Markdown under a memoized row see presentation changes even when nothing in that row changed. */
+export function MarkdownPresentation({ children }) {
+    const scope = markdownScope();
+    const revision = markdownRevision();
+    const value = useMemo(() => ({ scope, revision }), [scope, revision]);
+
+    return h(MarkdownContext.Provider, { value }, children);
+}
 
 /**
  * Markdown as sanitized parts (`partsOf`). Cached, least recently used out first: a transcript renders its rows in
@@ -538,9 +561,7 @@ const MARKDOWN_CACHE = 500;
  * (`cache` false) is not kept, and its long code blocks are not folded while they grow. With `breaks`, a single line
  * break is a new line rather than a space.
  */
-function markdownParts(text, conversationId, cache, base, breaks, access) {
-    const revision = markdownRevision();
-
+function markdownParts(text, conversationId, cache, base, breaks, revision) {
     if (!cache) {
         return {
             revision,
@@ -548,7 +569,7 @@ function markdownParts(text, conversationId, cache, base, breaks, access) {
         };
     }
 
-    const key = [access, conversationId ?? "", base ?? "", breaks, text].join("\u0000");
+    const key = JSON.stringify([conversationId ?? null, base, breaks, text]);
     const saved = markdownCache.get(key);
 
     if (saved !== undefined) {
@@ -654,14 +675,17 @@ export function Markdown({
 }) {
     const live = useRef(null);
     const root = useRef(null);
-    const access = renderAccess();
+    const { scope, revision } = useContext(MarkdownContext) ?? {
+        scope: markdownScope(),
+        revision: markdownRevision(),
+    };
 
     useEffect(() => mountMath(root.current));
 
     // Growing text, block by block (`liveBlocks`); a whole page is fenced as one block (`fencePage`), as before.
     if (!cache && fencePage(text) === text) {
-        const renderer = `${markdownRevision()}:${access}`;
-        const settings = [renderer, conversationId ?? "", base ?? "", breaks].join("\u0000");
+        const renderer = `${revision}:${scope}`;
+        const settings = JSON.stringify([renderer, conversationId ?? null, base, breaks]);
 
         if (live.current?.settings !== settings) {
             live.current = { settings, kept: new Map() };
@@ -683,8 +707,9 @@ export function Markdown({
     }
 
     live.current = null;
-    const { parts, revision } = markdownParts(text, conversationId, cache, base, breaks, access);
-    const renderer = `${revision}:${access}`;
+    const saved = markdownParts(text, conversationId, cache, base, breaks, revision);
+    const { parts } = saved;
+    const renderer = `${saved.revision}:${scope}`;
 
     if (parts.length === 1 && parts[0].kind === undefined) {
         return html`<div
