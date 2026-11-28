@@ -48,7 +48,11 @@ import {
     WatchDoc,
 } from "./docs.ts";
 import { COMMAND_ENTRY, SHELL_ENTRY } from "./entry-format.ts";
-import { presentationOptions, queuePresentation } from "./entry-presentation.ts";
+import {
+    type ProjectOptions,
+    presentationOptions,
+    queuePresentation,
+} from "./entry-presentation.ts";
 import { describe } from "./errors.ts";
 import { limitParallel } from "./folder-access.ts";
 import { agentInfo } from "./models.ts";
@@ -63,6 +67,7 @@ import {
     PEEK_LINES,
     type PeekLine,
     peekLines,
+    projectedKind,
     projectEntry,
     projectLimit,
     projectLive,
@@ -411,6 +416,19 @@ function hasReplyText(message: { content?: unknown } | undefined): boolean {
     );
 }
 
+type DeferredProjection = Required<ProjectOptions>;
+type CachedProjection = ClientEntry | DeferredProjection | null;
+type IndexedEntry = Pick<ClientEntry, "id" | "kind"> & { record: EntryRecord };
+type TranscriptIndex = {
+    source: readonly EntryRecord[];
+    entries: IndexedEntry[];
+    order: number[];
+};
+
+function deferred(entry: CachedProjection): entry is DeferredProjection {
+    return entry !== null && !("kind" in entry);
+}
+
 /** Whether the ids the tab kept are still the start of this projection's order. */
 function fitsOrder(have: NonNullable<Client["have"]>, order: readonly number[]): boolean {
     return (
@@ -439,7 +457,8 @@ export class Room {
     #headTimer: NodeJS.Timeout | undefined;
     /** The branch this view last read, as JSON. */
     #head = "";
-    readonly #projected = new Map<number, ClientEntry | null>();
+    readonly #projected = new Map<number, CachedProjection>();
+    #index: TranscriptIndex | undefined;
     /** The live run as tabs get it, projected once for each state of it, not once for each tab. */
     #live: { from: LiveState | undefined; limit: string; projected: ClientLive } | undefined;
     /** Each waiting message's text for the queue, and the subagents it reports from: what it says does not change. */
@@ -762,6 +781,10 @@ export class Room {
                                     entry.kind === "pi.assistant" && hasReplyText(entry.model?.[0]),
                             )));
 
+                if (entries !== held.entries) {
+                    this.#index = undefined;
+                }
+
                 this.#view = { conversation: view.conversation, docs: view.docs, entries };
                 this.schedule(early);
             }
@@ -813,6 +836,8 @@ export class Room {
     #reprojectEntries(only: ReadonlySet<number> | undefined): void {
         const view = this.#view;
 
+        this.#index = undefined;
+
         if (view === undefined) {
             this.#projected.clear();
 
@@ -820,6 +845,7 @@ export class Room {
         }
 
         const changed: number[] = [];
+        const presentations = this.#app.webs.presentations();
 
         for (const record of view.entries) {
             const id = record.id as unknown as number;
@@ -828,14 +854,31 @@ export class Room {
                 continue;
             }
 
-            const before = this.#projected.get(id);
+            let before = this.#projected.get(id);
 
-            this.#projected.delete(id);
-
-            // Never projected, so never sent: its first projection is already the new one.
+            // Never indexed or projected, so never sent: its first projection is already the new one.
             if (before === undefined) {
                 continue;
             }
+
+            if (deferred(before)) {
+                // A skipped entry can already be in the tab (from a scroll or `have`). Compare both versions just
+                // as for a cached body, but only a registered kind or a prefix match could have changed it.
+                const canChange =
+                    record.kind === "pi.user"
+                        ? (!before.authored && before.presentations.prefixes.length > 0) ||
+                          (this.authors[id] === undefined && presentations.prefixes.length > 0)
+                        : before.presentations.byKind.has(record.kind) ||
+                          presentations.byKind.has(record.kind);
+
+                if (!canChange) {
+                    continue;
+                }
+
+                before = projectEntry(record, false, before) ?? null;
+            }
+
+            this.#projected.delete(id);
 
             if (JSON.stringify(before) !== JSON.stringify(this.#entry(record))) {
                 changed.push(id);
@@ -859,13 +902,11 @@ export class Room {
         const id = entry.id as unknown as number;
         let projected = this.#projected.get(id);
 
-        if (projected === undefined) {
-            projected =
-                projectEntry(
-                    entry,
-                    false,
-                    presentationOptions(this.#app.webs.presentations(), this.authors, id),
-                ) ?? null;
+        if (projected === undefined || deferred(projected)) {
+            const options =
+                projected ?? presentationOptions(this.#app.webs.presentations(), this.authors, id);
+
+            projected = projectEntry(entry, false, options) ?? null;
             this.#projected.set(id, projected);
         }
 
@@ -928,43 +969,45 @@ export class Room {
             client.liveBlocks = undefined;
         }
 
-        const projected = this.#projectedEntries(view.entries);
-        const order = projected.map((entry) => entry.id);
+        const { entries: indexed, order } = this.#transcript(view.entries);
         const have = full ? client.have : undefined;
         const kept = full ? this.#kept(client, order) : 0;
         // Another build's copy is only a head start on screen. Send its range whole, never counting those entries
         // as sent. If the order shifted, send the whole context: a row the reader was on can now be anywhere in it.
         const refresh =
             have !== undefined && (client.protocol ?? 1) >= 7 && have.build !== this.#app.build;
-        const first = full && (client.protocol ?? 1) >= 4 ? firstEntries(projected) : 0;
+        const first = full && (client.protocol ?? 1) >= 4 ? firstEntries(indexed) : 0;
         const from = refresh ? (fitsOrder(have, order) ? Math.min(first, have.from) : 0) : first;
         const light = mayLighten && !refresh && full && (client.protocol ?? 1) >= 5;
         const entries: ClientEntry[] = [];
         let partial = false;
 
-        projected.forEach((entry, index) => {
-            if (client.sentEntries.has(entry.id)) {
-                return;
+        for (let index = 0; index < indexed.length; index++) {
+            const { id, record } = indexed[index]!;
+
+            if (client.sentEntries.has(id)) {
+                continue;
             }
 
             // One before the newest rows is the tab's to ask for: it is not sent with a later update either.
             if (index < from) {
-                client.sentEntries.add(entry.id);
+                client.sentEntries.add(id);
 
-                return;
+                continue;
             }
 
+            const entry = this.#entry(record)!;
             const lighter = light ? lightEntry(entry) : null;
 
             // A light one is not counted as sent: the next update brings it whole.
             if (lighter === null) {
-                client.sentEntries.add(entry.id);
+                client.sentEntries.add(id);
             } else {
                 partial = true;
             }
 
             entries.push(lighter ?? entry);
-        });
+        }
 
         const orderKey = order.join(",");
         const orderChanged = orderKey !== client.orderKey;
@@ -1174,19 +1217,57 @@ export class Room {
         return have.count;
     }
 
-    /** The active context's entries as tabs get them, oldest first; the ones tabs do not show are left out. */
-    #projectedEntries(records: readonly EntryRecord[]): ClientEntry[] {
-        const out: ClientEntry[] = [];
+    /** The active context's visible order and row kinds, without projecting bodies. */
+    #transcript(records: readonly EntryRecord[]): TranscriptIndex {
+        if (this.#index?.source === records) {
+            return this.#index;
+        }
+
+        const presentations = this.#app.webs.presentations();
+        const authored = { presentations, authored: true };
+        const unauthored = { presentations, authored: false };
+        const entries: IndexedEntry[] = [];
+        const order: number[] = [];
 
         for (const record of records) {
-            const projected = this.#entry(record);
+            const rawId = record.id as unknown as number;
+            let cached = this.#projected.get(rawId);
 
-            if (projected !== null) {
-                out.push(projected);
+            if (cached === undefined) {
+                // Remember what the old eager projection would have used, without keeping a copy of the authors doc.
+                cached = this.authors[rawId] === undefined ? unauthored : authored;
+                this.#projected.set(rawId, cached);
+            }
+
+            // Preserve any stored overrides: these two projections spread the data over their id and kind.
+            if (
+                deferred(cached) &&
+                (record.kind === COMMAND_ENTRY || record.kind === SHELL_ENTRY) &&
+                typeof record.data === "object" &&
+                record.data !== null &&
+                (Object.hasOwn(record.data, "id") || Object.hasOwn(record.data, "kind"))
+            ) {
+                cached = this.#entry(record);
+            }
+
+            if (cached === null) {
+                continue;
+            }
+
+            if (deferred(cached)) {
+                const kind = projectedKind(record, cached.presentations);
+
+                if (kind !== undefined) {
+                    entries.push({ id: rawId, kind, record });
+                    order.push(rawId);
+                }
+            } else {
+                entries.push({ id: cached.id, kind: cached.kind, record });
+                order.push(cached.id);
             }
         }
 
-        return out;
+        return (this.#index = { source: records, entries, order });
     }
 
     /**
@@ -1204,22 +1285,29 @@ export class Room {
             return [];
         }
 
-        const projected = this.#projectedEntries(view.entries);
-        const end = projected.findIndex((entry) => entry.id === before);
+        const { order, entries } = this.#transcript(view.entries);
+        const end = order.indexOf(before);
 
         if (end === -1) {
             return [];
         }
 
-        const earlier = projected.slice(0, end);
+        const earlier = entries.slice(0, end);
+        let start = 0;
 
         if (from !== undefined) {
-            const start = earlier.findIndex((entry) => entry.id === from);
+            const at = order.indexOf(from);
 
-            return start === -1 ? [] : earlier.slice(turnStart(earlier, start));
+            if (at === -1 || at >= end) {
+                return [];
+            }
+
+            start = turnStart(earlier, at);
+        } else if (rows !== undefined) {
+            start = firstEntries(earlier, rows);
         }
 
-        return rows === undefined ? earlier : earlier.slice(firstEntries(earlier, rows));
+        return earlier.slice(start).map(({ record }) => this.#entry(record)!);
     }
 
     /**
@@ -1235,10 +1323,24 @@ export class Room {
         const view = this.#view;
         // An input stored as a module's own kind is not a person's message: it stays out, as it did before modules
         // could present one. A `pi.user` message a module's prefix matched stays in, and says so (`presentation`).
-        const all = (view === undefined ? [] : this.#projectedEntries(view.entries)).filter(
-            (entry) =>
-                entry.kind === "user" &&
-                (entry.presentation === undefined || entry.presentation.prefixed === true),
+        const all = (view === undefined ? [] : this.#transcript(view.entries).entries).filter(
+            ({ kind, record }) => {
+                if (kind !== "user") {
+                    return false;
+                }
+
+                if (record.kind === "pi.user") {
+                    return true;
+                }
+
+                const projected = this.#entry(record);
+
+                return (
+                    projected?.kind === "user" &&
+                    (projected.presentation === undefined ||
+                        projected.presentation.prefixed === true)
+                );
+            },
         );
         const end =
             before === undefined ? all.length : all.findIndex((entry) => entry.id === before);
@@ -1250,13 +1352,13 @@ export class Room {
         const start = Math.max(0, end - limit);
 
         return {
-            messages: all
-                .slice(start, end)
-                .map((entry) =>
-                    entry.kind === "user" && entry.text.length > USER_MESSAGE_TEXT
-                        ? { ...entry, text: entry.text.slice(0, USER_MESSAGE_TEXT) }
-                        : entry,
-                ),
+            messages: all.slice(start, end).map(({ record }) => {
+                const entry = this.#entry(record)!;
+
+                return entry.kind === "user" && entry.text.length > USER_MESSAGE_TEXT
+                    ? { ...entry, text: entry.text.slice(0, USER_MESSAGE_TEXT) }
+                    : entry;
+            }),
             before: start === 0 ? null : all[start]!.id,
         };
     }
@@ -1635,6 +1737,7 @@ export class Room {
         void this.#watch?.stop();
         this.#watch = undefined;
         this.#view = undefined;
+        this.#index = undefined;
         this.#projected.clear();
         this.#queued.clear();
     }

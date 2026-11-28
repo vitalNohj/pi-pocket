@@ -85,6 +85,7 @@ export const SIDEBAR = [
             ["docs/self-editing.md", "Changing the code"],
             ["docs/map.md", "Project map"],
             ["docs/architecture.md", "Architecture"],
+            ["docs/open-measurements.md", "Session open measurements"],
             ["docs/features.md", "Features"],
             ["docs/releases.md", "Releases and betas"],
             ["docs/release-notes.md", "Release notes"],

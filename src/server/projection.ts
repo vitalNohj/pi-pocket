@@ -20,6 +20,7 @@ import {
     splitAttachments,
 } from "./entry-format.ts";
 import {
+    type EntryPresentations,
     type EntryPresentationView,
     matchPrefix,
     presentationSummary,
@@ -92,6 +93,38 @@ export type ClientEntry =
     | { id: number; kind: "fromPi"; title: string; file: string }
     | { id: number; kind: "other"; entryKind: string };
 
+type EntryKind = ClientEntry["kind"];
+
+const BUILTIN_KINDS = new Map<string, EntryKind>([
+    ["pi.user", "user"],
+    ["pi.assistant", "assistant"],
+    ["pi.tool-result", "toolResult"],
+    ["pi.compaction", "compaction"],
+    ["pi.reset", "reset"],
+    [FROM_PI_ENTRY, "fromPi"],
+    [NOTE_ENTRY, "note"],
+    [TURN_NOTE_ENTRY, "turnNote"],
+    [COMMAND_ENTRY, "command"],
+    [SHELL_ENTRY, "shell"],
+]);
+
+/** Visibility and row kind without reading a message's body. A prefix presentation does not change a user row's kind. */
+export function projectedKind(
+    entry: EntryRecord,
+    presentations?: EntryPresentations,
+): EntryKind | undefined {
+    if (entry.kind === "pi.system") {
+        return undefined;
+    }
+
+    return (
+        BUILTIN_KINDS.get(entry.kind) ??
+        (presentations?.byKind.has(entry.kind) && entry.model?.[0]?.role === "user"
+            ? "user"
+            : "other")
+    );
+}
+
 /** Entry kinds that show as transcript rows: a tool's result shows in its call's card. As `isRow` in `web/store.js`. */
 const ROW_KINDS = new Set([
     "user",
@@ -113,7 +146,7 @@ export const FIRST_ROWS = 80;
  * those rows what was open there (`rowsBefore` in `web/turns.js`), so it gets them with what follows. At most
  * `FIRST_ROWS` rows back: a run of Pi's alone can be thousands of answers.
  */
-export function turnStart(entries: readonly ClientEntry[], index: number): number {
+export function turnStart(entries: readonly Pick<ClientEntry, "kind">[], index: number): number {
     let start = index;
     let rows = 0;
 
@@ -139,7 +172,10 @@ export function turnStart(entries: readonly ClientEntry[], index: number): numbe
  * The index of the first entry a tab needs to draw the newest `rows` rows: from the row that many back, with the turn it
  * is in, and every tool result after it.
  */
-export function firstEntries(entries: readonly ClientEntry[], rows = FIRST_ROWS): number {
+export function firstEntries(
+    entries: readonly Pick<ClientEntry, "kind">[],
+    rows = FIRST_ROWS,
+): number {
     let seen = 0;
 
     for (let at = entries.length - 1; at >= 0; at--) {
@@ -553,11 +589,15 @@ export function projectEntry(
     const id = entry.id as unknown as number;
     const presentations = options?.presentations;
 
-    switch (entry.kind) {
-        case "pi.user": {
+    switch (projectedKind(entry, presentations)) {
+        case "user": {
             const pieces = userPieces(message);
-            const spec =
-                options?.authored === true ? undefined : matchPrefix(pieces.raw, presentations);
+            const user = entry.kind === "pi.user";
+            const spec = user
+                ? options?.authored === true
+                    ? undefined
+                    : matchPrefix(pieces.raw, presentations)
+                : presentations?.byKind.get(entry.kind);
 
             return projectUserMessage(
                 id,
@@ -566,11 +606,11 @@ export function projectEntry(
                 entry.data,
                 full,
                 spec,
-                spec !== undefined,
+                user && spec !== undefined,
             );
         }
 
-        case "pi.assistant": {
+        case "assistant": {
             const blocks = projectBlocks(message?.content, full);
             const stopReason =
                 typeof message?.stopReason === "string" ? message.stopReason : undefined;
@@ -589,7 +629,7 @@ export function projectEntry(
             };
         }
 
-        case "pi.tool-result": {
+        case "toolResult": {
             const { text, clipped } = full
                 ? { text: textOfContent(message?.content), clipped: undefined }
                 : clip(textOfContent(message?.content), OUTPUT_LIMIT);
@@ -610,19 +650,19 @@ export function projectEntry(
             };
         }
 
-        case "pi.compaction":
+        case "compaction":
             return { id, kind: "compaction", summary: textOfContent(message?.content) };
 
-        case "pi.reset": {
+        case "reset": {
             const text = textOfContent(message?.content);
 
             return text === "" ? { id, kind: "reset" } : { id, kind: "reset", text };
         }
 
-        case "pi.system":
+        case undefined:
             return undefined;
 
-        case FROM_PI_ENTRY: {
+        case "fromPi": {
             const data = entry.data as Partial<FromPiData> | undefined;
 
             // The file's name only: its folder is in the owner's home, which others need not see.
@@ -636,7 +676,7 @@ export function projectEntry(
             };
         }
 
-        case NOTE_ENTRY: {
+        case "note": {
             const data = entry.data as { text?: unknown; name?: unknown } | undefined;
 
             return {
@@ -647,7 +687,7 @@ export function projectEntry(
             };
         }
 
-        case TURN_NOTE_ENTRY: {
+        case "turnNote": {
             const data = entry.data as Partial<TurnNoteData> | undefined;
 
             return {
@@ -658,7 +698,7 @@ export function projectEntry(
             };
         }
 
-        case COMMAND_ENTRY: {
+        case "command": {
             const data = entry.data as CommandData;
             const { text, clipped } = full
                 ? { text: data.output, clipped: undefined }
@@ -673,7 +713,7 @@ export function projectEntry(
             };
         }
 
-        case SHELL_ENTRY: {
+        case "shell": {
             const data = entry.data as ShellData;
             const { text, clipped } = full
                 ? { text: data.output, clipped: undefined }
@@ -688,24 +728,8 @@ export function projectEntry(
             };
         }
 
-        default: {
-            const spec = presentations?.byKind.get(entry.kind);
-
-            // A registered kind whose model message is a user message is that input, clipped until a full read.
-            if (spec !== undefined && message?.role === "user") {
-                return projectUserMessage(
-                    id,
-                    message,
-                    userPieces(message),
-                    entry.data,
-                    full,
-                    spec,
-                    false,
-                );
-            }
-
+        case "other":
             return { id, kind: "other", entryKind: entry.kind };
-        }
     }
 }
 
