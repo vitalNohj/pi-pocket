@@ -202,9 +202,11 @@ async function localStart() {
     await shot("local-owner-picker", serverWindow);
     await page("Open");
     // Read only this disposable server's token to verify the result. The app never receives it from the test.
-    const { ownerToken } = JSON.parse(await readFile(join(localData, "config.json"), "utf8"));
-
-    await until("the authenticated local picker created a session", async () => {
+    const { ownerToken, users } = JSON.parse(
+        await readFile(join(localData, "config.json"), "utf8"),
+    );
+    const owner = users.find(({ role }) => role === "owner");
+    const session = await until("the authenticated local picker created a session", async () => {
         const reply = await fetch(`${local.address}/api/sessions`, {
             headers: { Authorization: `Bearer ${ownerToken}` },
             signal: AbortSignal.timeout(2500),
@@ -212,9 +214,12 @@ async function localStart() {
 
         assert.equal(reply.status, 200);
 
-        return (await reply.json()).some(({ title }) => title === "allowed-workspace");
+        return (await reply.json()).find(({ createdBy }) => createdBy === owner.id);
     });
-    await expect("allowed-workspace", serverWindow);
+
+    assert.equal(session.runner, undefined);
+    await sameFolder(session.cwd, work);
+    await expect("New session", serverWindow);
     console.log(
         "Fresh Home started the bundled local server and signed in to create a session in the installed view.",
     );
@@ -248,7 +253,7 @@ async function checkAndReturnToLocal(address, local, sawFailedCheck, navigations
     await expect("Running on this computer");
     await press("Open Pi Pocket");
     await until("Home connected back to Local", async () => (await prefs()).home.mode === "local");
-    await expect("allowed-workspace", serverWindow);
+    await expect("New session", serverWindow);
     assert.deepEqual(await runningLocal(localData), local);
     await openSettings();
     await press("Home");
