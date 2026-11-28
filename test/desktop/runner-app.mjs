@@ -79,7 +79,6 @@ async function input(operation, title, ...args) {
 const press = (label, title = settings) => input("press", title, label);
 const expect = (label, title = settings) => input("expect-text", title, label);
 const focus = (label, title = settings) => input(windows ? "press" : "focus-field", title, label);
-const type = (text, title = settings) => input("type", title, text);
 const page = (label) => press(label, serverWindow);
 const prefs = async () =>
     JSON.parse(await readFile(join(profile, "desktop.json"), "utf8")).preferences;
@@ -91,7 +90,10 @@ async function fill(label, text, title = settings, replace = false) {
         await input("selectAll", title);
     }
 
-    await type(text, title);
+    // SendKeys interprets a tilde in a Windows short path as Enter. Send the fixture text literally.
+    const keys = windows ? text.replace(/[+^%~(){}[\]]/g, (key) => `{${key}}`) : text;
+
+    await input("type", title, keys);
     await input("expect-field", title, text);
 }
 
