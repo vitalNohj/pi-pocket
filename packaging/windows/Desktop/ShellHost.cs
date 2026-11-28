@@ -24,7 +24,18 @@ namespace PiPocket
 
         internal int PageGeneration { get { return pageGeneration; } }
         internal bool PageBridge { get { return pageBridge; } }
+        internal bool PageReconnecting { get { return pageStatus == "reconnecting"; } }
         internal string[] OtherOrigins { get { return otherOrigins; } }
+        PocketWindow RecoveryTarget
+        {
+            get
+            {
+                PocketWindow active = Form.ActiveForm as PocketWindow;
+                if (active != null && active.IsCurrent) { return active; }
+                if (lastPageWindow != null && lastPageWindow.IsCurrent) { return lastPageWindow; }
+                return ActivePocketWindow;
+            }
+        }
 
         async void StartShell()
         {
@@ -95,6 +106,8 @@ namespace PiPocket
             var active = ShellWire.Get(home, "active");
             int generation = ShellWire.Number(active, "generation");
             string status = ShellWire.Text(active, "status");
+            string previousStatus = pageStatus;
+            pageStatus = status;
 
             if (generation != pageGeneration)
             {
@@ -117,15 +130,16 @@ namespace PiPocket
                 if (ready && (openWhenReady || settings != null && settings.Visible)) { BackToPage(); }
                 else if (!ready && openWhenReady) { OpenSettings("home"); }
             }
-            else if (pageStatus == "reconnecting" && status == "connected" && window != null && window.Browser != null)
+            else if (previousStatus != status)
             {
-                window.Browser.Reload();
+                var views = new List<PocketWindow>(popups);
+                if (window != null) { views.Add(window); }
+                foreach (PocketWindow page in views)
+                {
+                    if (status == "reconnecting") { page.ConnectionLost(); }
+                    else if (previousStatus == "reconnecting" && status == "connected") { page.ConnectionRestored(); }
+                }
             }
-            if (status == "reconnecting" && pageStatus != status && settings == null && window != null && window.Visible)
-            {
-                window.ShowPageNotice("Connection lost. Pi Pocket will retry. Open Desktop Settings to retry now.");
-            }
-            pageStatus = status;
             if (generation == 0 && openWhenReady && ShellWire.Text(ShellWire.Get(home, "local"), "status") == "error") { OpenSettings("home"); }
             UpdateTrayText();
         }
@@ -149,12 +163,20 @@ namespace PiPocket
             catch (InvalidOperationException) { }
         }
 
-        internal void ReportPage(PocketWindow page, string origin, bool? hung = null)
+        internal void ReportPage(PocketWindow page)
         {
-            if (page != window) { return; }
-            var data = new Dictionary<string, object> { { "generation", pageGeneration }, { "committedOrigin", origin } };
-            if (hung.HasValue) { data.Add("hung", hung.Value); }
-            Report("page", data);
+            if (pageGeneration == 0 || page != RecoveryTarget || page != null && !page.IsCurrent) { return; }
+            Report("page", new {
+                generation = pageGeneration, committedOrigin = page == null ? null : page.CommittedOrigin,
+                recovery = page == null ? "none" : page.RecoveryState,
+            });
+        }
+
+        void ReloadActivePage()
+        {
+            PocketWindow page = RecoveryTarget;
+            if (page == null) { OpenWindow(); }
+            else { page.ReloadPage(); }
         }
 
         async Task<object> HandleOperation(string action, object data)
@@ -168,7 +190,7 @@ namespace PiPocket
                 case "settings.open": OpenSettings(ShellWire.Text(data, "section")); break;
                 case "settings.back": BackToPage(); break;
                 case "window.open": OpenWindow(); break;
-                case "window.reload": if (front != null && front.Browser != null) { front.Browser.Reload(); } break;
+                case "window.reload": ReloadActivePage(); break;
                 case "window.newSession": Bridge.NewSession(); break;
                 case "window.newWindow": await NewSessionWindow(); break;
                 case "window.back": if (front != null && front.Browser != null && front.Browser.CanGoBack) { front.Browser.GoBack(); } break;

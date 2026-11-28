@@ -155,6 +155,38 @@ test("only the current document/account feed populates the tray and Dock pins", 
     });
 });
 
+test("Reload describes only the current generation's selected view", async (t) => {
+    const { controller, call, action } = await desktop(t, true);
+
+    await controller.begin();
+    const generation = controller.snapshot().home.active.generation;
+    const reload = () => controller.snapshot().menus.tray.find(({ id }) => id === "window.reload");
+    const report = (recovery, source = generation) =>
+        call("host.report", {
+            event: "page",
+            data: { generation: source, committedOrigin: null, recovery },
+        });
+
+    await report("hung");
+    assert.equal(reload().label, "Reload (page not responding)");
+    await assert.rejects(report("failed", generation - 1), { code: "invalid" });
+    await assert.rejects(report("not-a-recovery-state"), { code: "invalid" });
+    assert.equal(reload().label, "Reload (page not responding)");
+    await report("failed");
+    assert.equal(reload().label, "Reload (page could not load)");
+    assert.equal(reload().enabled, true);
+    await report("ready");
+    assert.equal(reload().label, "Reload");
+    await action("home.local.stop");
+    assert.equal(reload().enabled, false);
+    assert.equal(
+        controller
+            .snapshot()
+            .menus.tray.some(({ id, enabled }) => id === "settings.open" && enabled),
+        true,
+    );
+});
+
 test("notification preferences save and OS status is separate from them", async (t) => {
     const current = await desktop(t);
     const notifications = { enabled: false, sound: false, approve: "always", commandLimit: 20 };

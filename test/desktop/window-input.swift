@@ -342,6 +342,12 @@ case "press", "expect-text", "expect-prefix", "focus-field":
 case "new":
     prepareInput()
     key(45, flags: .maskCommand) // Cmd+N
+case "reload":
+    prepareInput()
+    key(15, flags: .maskCommand) // Cmd+R
+case "settings":
+    prepareInput()
+    key(43, flags: .maskCommand) // Cmd+Comma
 case "selectAll":
     prepareInput()
     key(0, flags: .maskCommand) // Cmd+A

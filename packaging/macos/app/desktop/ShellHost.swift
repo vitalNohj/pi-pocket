@@ -27,6 +27,42 @@ func pageOrigin(_ url: URL?) -> String? {
     return "\(scheme)://\(name)\(port.map { ":\($0)" } ?? "")"
 }
 
+// Owned by one view, even when several views share the same server and cookie store.
+final class PageRecovery {
+    let generation: Int
+    let entry: URL
+    let strip: NSStackView
+    let label: NSTextField
+    let reload: NSButton
+    var timer: Timer?
+    var navigation: WKNavigation?
+    var address: URL
+    var committedOrigin: String?
+    var status = "loading"
+    var attempt: Int
+    var epoch = 0
+    var started = 0.0
+    var answered = 0.0
+    var lastTick = 0.0
+    var readySince: TimeInterval?
+    var loaded = false
+    var sawReady = false
+    var checking = false
+    var exited = false
+    var blocked = false
+    var serverError = false
+
+    init(page: ShellPage, strip: NSStackView, label: NSTextField, reload: NSButton, attempt: Int) {
+        generation = page.generation
+        entry = page.address
+        address = entry
+        self.strip = strip
+        self.label = label
+        self.reload = reload
+        self.attempt = attempt
+    }
+}
+
 extension AppDelegate {
     var prefs: [String: Any] { snapshot["preferences"] as? [String: Any] ?? [:] }
     var devTools: Bool { windowPrefs.developerTools }
@@ -95,6 +131,8 @@ extension AppDelegate {
         let active = activeHome["active"] as? [String: Any] ?? [:]
         let nextPage = ShellPage(active)
         let status = active["status"] as? String
+        let previousStatus = pageStatus
+        pageStatus = status
 
         if page?.generation != nextPage?.generation {
             let wasOpen = openWhenReady || settings?.window.isVisible == true
@@ -102,17 +140,22 @@ extension AppDelegate {
             closeSessionWindows(keepUnboundNewSession: page == nil && nextPage != nil)
             page = nextPage
             checkedSignIn = false
-            recovered = false
             pageCommitted = false
             setBadge(0)
             if wasOpen, page != nil { backToPage() }
             else if wasOpen { openSettings("home") }
-        } else if pageStatus == "reconnecting", status == "connected" {
-            webView?.reload()
-        } else if status == "reconnecting", pageStatus != status {
-            pageNotice("Connection lost. Pi Pocket will retry. Open Desktop Settings to retry now.")
+        } else if previousStatus != status {
+            let windows = [window].compactMap { $0 } + Array(popups.keys)
+            for each in windows {
+                guard let view = (each as? PocketNativeWindow)?.chrome?.webView, let recovery = recovery(for: view) else { continue }
+                if status == "reconnecting", recovery.status == "ready" || recovery.status == "loading" {
+                    pageNotice("Connection lost. Pi Pocket will retry. Open Desktop Settings to retry now.", in: view)
+                } else if previousStatus == "reconnecting", status == "connected", !recovery.blocked {
+                    if recovery.status == "ready" { showPageReady(view, recovery) }
+                    else { reloadPage(view) }
+                }
+            }
         }
-        pageStatus = status
         if openWhenReady, page == nil, (activeHome["local"] as? [String: Any])?["status"] as? String == "error" { openSettings("home") }
     }
 
@@ -120,27 +163,36 @@ extension AppDelegate {
         sessionBridge.reset(keepUnboundNewSession: keepUnboundNewSession)
         for extra in Array(popups.keys) {
             if let observer = popups.removeValue(forKey: extra) { NotificationCenter.default.removeObserver(observer) }
-            let view = (extra as? PocketNativeWindow)?.chrome?.webView
-            dictation.detach(view)
-            clearPageHandlers(view)
+            releasePage((extra as? PocketNativeWindow)?.chrome?.webView)
             extra.delegate = nil
             extra.close()
         }
-        dictation.detach(webView)
-        webView?.stopLoading()
-        clearPageHandlers(webView)
+        releasePage(webView)
         window?.delegate = nil
         window?.close()
         window = nil
         webView = nil
-        notice = nil
+        lastPageWindow = nil
         applyWindowOptions()
     }
 
-    func clearPageHandlers(_ view: WKWebView?) {
-        let messages = view?.configuration.userContentController
-        messages?.removeScriptMessageHandler(forName: "pocketWindow")
-        messages?.removeScriptMessageHandler(forName: "pocket")
+    func releasePage(_ view: WKWebView?) {
+        guard let view = view else { return }
+        recoveries.removeValue(forKey: ObjectIdentifier(view))?.timer?.invalidate()
+        view.navigationDelegate = nil
+        view.uiDelegate = nil
+        view.stopLoading()
+        dictation.detach(view)
+        sessionBridge.remove(view)
+        let messages = view.configuration.userContentController
+        // A WebKit-created pop-up can share the opener's content controller.
+        let others = [window].compactMap { $0 } + Array(popups.keys)
+        if others.contains(where: { candidate in
+            guard let other = (candidate as? PocketNativeWindow)?.chrome?.webView else { return false }
+            return other !== view && recoveries[ObjectIdentifier(other)] != nil && other.configuration.userContentController === messages
+        }) { return }
+        messages.removeScriptMessageHandler(forName: "pocketWindow")
+        messages.removeScriptMessageHandler(forName: "pocket")
     }
 
     func shellAction(_ action: String, data: Any? = nil) {
@@ -165,12 +217,18 @@ extension AppDelegate {
         if !quitting { controller?.call("host.report", ["event": event, "data": data]) }
     }
 
-    func reportPage(_ origin: String?, hung: Bool? = nil) {
-        guard let page = page else { return }
-        var data: [String: Any] = ["generation": page.generation, "committedOrigin": origin as Any? ?? NSNull()]
+    var recoveryTarget: WKWebView? {
+        for owner in [NSApp.keyWindow, lastPageWindow, window] + NSApp.orderedWindows.map({ Optional($0) }) {
+            if let view = (owner as? PocketNativeWindow)?.chrome?.webView, recovery(for: view) != nil { return view }
+        }
+        return nil
+    }
 
-        if let hung = hung { data["hung"] = hung }
-        report("page", data)
+    func reportSelectedPage() {
+        guard let page = page else { return }
+        let current = recoveryTarget.flatMap { recovery(for: $0) }
+        report("page", ["generation": page.generation, "committedOrigin": current?.committedOrigin as Any? ?? NSNull(),
+            "recovery": current?.status ?? "none"])
     }
 
     func reportPins(feed: String?, pins: [BridgePin]) {
@@ -189,7 +247,7 @@ extension AppDelegate {
         case "settings.open": openSettings(data["section"] as? String)
         case "settings.back": backToPage()
         case "window.open": openWindow()
-        case "window.reload": frontView?.reload()
+        case "window.reload": reload()
         case "window.newSession": newSession()
         case "window.newWindow": newSessionWindow()
         case "window.pinned":
@@ -288,10 +346,210 @@ extension AppDelegate {
         if page != nil { openWindow() }
     }
 
-    func pageNotice(_ text: String?) {
-        notice?.arrangedSubviews.first.flatMap { $0 as? NSTextField }?.stringValue = text ?? ""
-        notice?.isHidden = text == nil
-        (window as? PocketNativeWindow)?.chrome?.needsLayout = true
+    func pageNotice(_ text: String?, in requested: WKWebView? = nil) {
+        guard let view = requested ?? webView, let recovery = recovery(for: view),
+            let chrome = (view.window as? PocketNativeWindow)?.chrome else { return }
+        recovery.label.stringValue = text ?? ""
+        recovery.strip.isHidden = text == nil
+        chrome.needsLayout = true
+    }
+
+    func makeSessionView(_ configuration: WKWebViewConfiguration) -> WKWebView {
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        view.allowsBackForwardNavigationGestures = true
+        view.allowsMagnification = true
+        if #available(macOS 13.3, *) { view.isInspectable = devTools }
+        return view
+    }
+
+    func watchPage(_ view: WKWebView, in owner: PocketNativeWindow, page: ShellPage, attempt: Int = 0) {
+        let text = NSTextField(labelWithString: "")
+        let reload = NSButton(title: "Reload", target: self, action: #selector(reloadNotice(_:)))
+        let settings = NSButton(title: "Desktop Settings…", target: self, action: #selector(openSettingsMenu))
+        let strip = NSStackView(views: [settings, reload, text])
+        text.lineBreakMode = .byTruncatingTail
+        text.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        strip.edgeInsets = NSEdgeInsets(top: 4, left: 8, bottom: 4, right: 8)
+        strip.distribution = .fill
+        owner.chrome?.notice = strip
+        let recovery = PageRecovery(page: page, strip: strip, label: text, reload: reload, attempt: attempt)
+        recoveries[ObjectIdentifier(view)] = recovery
+        beginPageAttempt(view, recovery)
+        if page.bridge { sessionBridge.add(view, address: page.address) }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self, weak view] _ in
+            if let view = view { self?.checkPage(view) }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        recovery.timer = timer
+    }
+
+    func recovery(for view: WKWebView) -> PageRecovery? {
+        guard !quitting, let recovery = recoveries[ObjectIdentifier(view)], page?.generation == recovery.generation else { return nil }
+        return recovery
+    }
+
+    func beginPageAttempt(_ view: WKWebView, _ recovery: PageRecovery) {
+        recovery.epoch += 1
+        recovery.started = ProcessInfo.processInfo.systemUptime
+        recovery.answered = recovery.started
+        recovery.readySince = nil
+        recovery.navigation = nil
+        recovery.loaded = false
+        recovery.sawReady = false
+        recovery.checking = false
+        recovery.exited = false
+        recovery.blocked = false
+        recovery.serverError = false
+        presentPage(view, recovery, recovery.attempt == 0 ? "loading" : "recovering",
+            recovery.attempt == 0 ? nil : "Trying to recover the page…")
+    }
+
+    func safeRecoveryAddress(_ address: URL?, _ recovery: PageRecovery) -> URL? {
+        guard let address = address, sameOrigin(address), address.fragment == nil,
+            address.query == nil || address.query == "pip=1",
+            BridgeProtocol.page(address, basePath: BridgeProtocol.basePath(recovery.entry)) else { return nil }
+        return address
+    }
+
+    func presentPage(_ view: WKWebView, _ recovery: PageRecovery, _ status: String, _ text: String?) {
+        let changed = recovery.status != status
+        recovery.status = status
+        recovery.reload.isHidden = status != "hung" && status != "failed"
+        if changed || recovery.label.stringValue != (text ?? "") { pageNotice(text, in: view) }
+        if changed, recoveryTarget === view { reportSelectedPage() }
+    }
+
+    func showPageReady(_ view: WKWebView, _ recovery: PageRecovery) {
+        presentPage(view, recovery, "ready", pageStatus == "reconnecting"
+            ? "Connection lost. Pi Pocket will retry. Open Desktop Settings to retry now."
+            : page?.bridge != true || !sameOrigin(view.url) ? "Sign in on this page to use Pi Pocket" : nil)
+    }
+
+    @objc func reloadNotice(_ sender: NSButton) {
+        if let view = (sender.window as? PocketNativeWindow)?.chrome?.webView { reloadPage(view) }
+    }
+
+    func reloadPage(_ view: WKWebView) {
+        guard let recovery = recovery(for: view) else { return }
+        recovery.attempt = 0
+        retryPageNavigation(view, recovery)
+    }
+
+    private func retryPageNavigation(_ view: WKWebView, _ recovery: PageRecovery) {
+        // WKWebView.url can be the provisional URL. Reload needs a current history item.
+        let reloadInPlace = safeRecoveryAddress(view.backForwardList.currentItem?.url, recovery) == recovery.address &&
+            safeRecoveryAddress(view.url, recovery) == recovery.address
+        beginPageAttempt(view, recovery)
+        view.stopLoading()
+        // Keep the native history for a loaded page. Do not replay an SSO or one-time sign-in URL.
+        if reloadInPlace, view.reload() != nil { return }
+        view.load(URLRequest(url: recovery.address))
+    }
+
+    private func replacePage(_ view: WKWebView, _ recovery: PageRecovery) {
+        guard let page = page, let owner = view.window as? PocketNativeWindow else { return }
+        let replacement = makeSessionView(pageConfig(page))
+        replacement.pageZoom = view.pageZoom
+        let chrome = WindowChrome(view: replacement, prefs: windowPrefs)
+        chrome.onEffect = owner.chrome?.onEffect
+        let main = view === webView
+        releasePage(view)
+        if main {
+            webView = replacement
+            pageCommitted = false
+        }
+        owner.contentView = chrome
+        chrome.apply(windowPrefs)
+        watchPage(replacement, in: owner, page: page, attempt: 2)
+        if owner.isKeyWindow {
+            owner.makeFirstResponder(replacement)
+            sessionBridge.focus(replacement)
+        }
+        if recoveryTarget === replacement { reportSelectedPage() }
+        replacement.load(URLRequest(url: recovery.address))
+    }
+
+    private func checkPage(_ view: WKWebView) {
+        guard let recovery = recovery(for: view), !recovery.blocked, let owner = view.window else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let interrupted = now - recovery.lastTick > 10
+        recovery.lastTick = now
+        if !recovery.exited && (interrupted || !owner.isVisible || owner.isMiniaturized || NSApp.isHidden) {
+            recovery.started = now
+            recovery.answered = now
+            recovery.readySince = nil
+            return
+        }
+        let silent = now - recovery.answered
+        if recovery.loaded, silent >= 10 {
+            recovery.readySince = nil
+            if recovery.status != "failed" {
+                presentPage(view, recovery, "hung", "The page is not responding. Reload it or open Desktop Settings.")
+            }
+        }
+        let expired = (!recovery.sawReady && now - recovery.started >= 15) || (recovery.loaded && silent >= 15)
+        if pageStatus != "reconnecting", recovery.exited || expired, recovery.status != "failed" {
+            let role = view === webView ? "main" : "extra"
+            switch recovery.attempt {
+            case 0:
+                recovery.attempt = 1
+                log("Page recovery (\(role)): reloading.")
+                retryPageNavigation(view, recovery)
+            case 1:
+                log("Page recovery (\(role)): recreating.")
+                replacePage(view, recovery)
+            default:
+                log("Page recovery (\(role)): stopped.")
+                presentPage(view, recovery, "failed", "The page could not recover. Reload it or open Desktop Settings to check the connection.")
+            }
+            return
+        }
+        if recovery.loaded, !recovery.checking { checkPageDocument(view, recovery) }
+    }
+
+    private func checkPageDocument(_ view: WKWebView, _ recovery: PageRecovery) {
+        let token = recovery.epoch
+        recovery.checking = true
+        var script = page?.bridge == true && sameOrigin(view.url)
+            ? "[...document.querySelectorAll('[data-part=boot]')].some(e => !e.classList.contains('inline')) ? 'boot' : 'ready'"
+            : "'ready'"
+        #if DESKTOP_STATUS_SMOKE
+        if ProcessInfo.processInfo.environment["PI_POCKET_RECOVERY_SMOKE"] == "1",
+            ProcessInfo.processInfo.environment["PI_POCKET_DESKTOP_STATE"] != nil,
+            page?.local == false, recovery.entry.host == "127.0.0.1" {
+            script = "document.body?.hasAttribute('data-fixture-exit') ? 'exit' : (\(script))"
+        }
+        #endif
+        // One read-only check in the current top document, even if it never replies.
+        view.evaluateJavaScript(script, in: nil, in: .defaultClient) { [weak self, weak view] result in
+            guard let self = self, let view = view, let current = self.recovery(for: view), current.epoch == token else { return }
+            current.checking = false
+            guard case .success(let value) = result, let answer = value as? String else { return }
+            #if DESKTOP_STATUS_SMOKE
+            if answer == "exit" {
+                // Test build only. Exercise the real WKNavigationDelegate callback.
+                let terminate = NSSelectorFromString("_killWebContentProcess")
+                if view.responds(to: terminate) { _ = view.perform(terminate) }
+                return
+            }
+            #endif
+            guard answer == "ready" || answer == "boot" else { return }
+            current.answered = ProcessInfo.processInfo.systemUptime
+            if answer == "boot" {
+                if current.sawReady { current.started = current.answered }
+                current.sawReady = false
+                current.readySince = nil
+                return
+            }
+            current.sawReady = true
+            if let address = self.safeRecoveryAddress(view.url, current) { current.address = address }
+            let since = current.readySince ?? current.answered
+            current.readySince = since
+            if current.answered - since >= 5 { current.attempt = 0 }
+            self.showPageReady(view, current)
+        }
     }
 
     func pageConfig(_ page: ShellPage) -> WKWebViewConfiguration {
@@ -312,7 +570,7 @@ extension AppDelegate {
     func newSession() { sessionBridge.newSession() }
 
     func newSessionWindow() {
-        if let page = page { popup(pageConfig(page)).load(URLRequest(url: page.address)) }
+        if let page = page { popup(pageConfig(page), page: page).load(URLRequest(url: page.address)) }
     }
 
     func bridgeAction(_ action: String) {
