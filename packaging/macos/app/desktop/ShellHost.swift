@@ -53,6 +53,7 @@ extension AppDelegate {
         do {
             controller = try ShellController(folder: stateFolder, assets: assets, existing: existing,
                 receive: { [weak self] in self?.controllerPacket($0) }, disconnected: { [weak self] in self?.controllerFailed() })
+            dictation.installKeys()
             if openWhenReady && fresh { openSettings("home") }
             controller?.call("subscribe") { [weak self] answer in
                 guard let self = self, !self.quitting else { return }
@@ -68,6 +69,7 @@ extension AppDelegate {
 
     func controllerFailed() {
         guard !quitting else { return }
+        dictation.cancel()
         log("Desktop controller stopped.")
         if openWhenReady { openSettings("home") }
     }
@@ -123,10 +125,12 @@ extension AppDelegate {
         for extra in Array(popups.keys) {
             if let observer = popups.removeValue(forKey: extra) { NotificationCenter.default.removeObserver(observer) }
             let view = (extra as? PocketNativeWindow)?.chrome?.webView
+            dictation.detach(view)
             clearPageHandlers(view)
             extra.delegate = nil
             extra.close()
         }
+        dictation.detach(webView)
         webView?.stopLoading()
         clearPageHandlers(webView)
         window?.delegate = nil
@@ -174,6 +178,9 @@ extension AppDelegate {
 
     func handleOperation(_ action: String, _ data: [String: Any], reply: @escaping ShellController.Reply) {
         switch action {
+        case "dictation.toggle", "dictation.copy", "dictation.event":
+            do { try dictation.operation(String(action.dropFirst("dictation.".count)), data) }
+            catch { reply(.failure(error)); return }
         case "settings.open": openSettings(data["section"] as? String)
         case "settings.back": backToPage()
         case "window.open": openWindow()
@@ -270,10 +277,12 @@ extension AppDelegate {
         configuration.websiteDataStore = page.local ? localStore : .default()
         configuration.applicationNameForUserAgent = "PiPocketMac/\(appVersion)"
         configuration.preferences.isElementFullscreenEnabled = true
-        if page.bridge { sessionBridge.install(configuration, address: page.address) }
-        if page.bridge, let origin = pageOrigin(page.address) {
-            installWindowScript(in: configuration.userContentController, origin: origin,
-                initial: "{side:'none',width:0,height:0,tint:null,nativeDragContext:true}")
+        if page.bridge {
+            sessionBridge.install(configuration, address: page.address, speechScript: dictation.script(for: page.address))
+            if let origin = pageOrigin(page.address) {
+                installWindowScript(in: configuration.userContentController, origin: origin,
+                    initial: "{side:'none',width:0,height:0,tint:null,nativeDragContext:true}")
+            }
         }
         return configuration
     }

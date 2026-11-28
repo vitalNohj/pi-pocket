@@ -79,15 +79,23 @@ func waitForFocusedField(_ expected: String) {
     fail("The focused Server address field did not contain the fixture address.")
 }
 
-func key(_ code: CGKeyCode, flags: CGEventFlags = [], text: String? = nil) {
+func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
     for pressed in [true, false] {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: pressed) else { fail("Cannot create key event.") }
-        event.flags = flags
-        if let text = text {
-            let units = Array(text.utf16)
-            units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
-        }
+        // The installer runs other UI fixtures in this same desktop session.
+        event.flags = pressed ? flags : []
         event.post(tap: .cghidEventTap)
+    }
+}
+
+func click(_ point: CGPoint) {
+    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        else { fail("Cannot create mouse event.") }
+        event.flags = []
+        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.04)
     }
 }
 
@@ -100,21 +108,30 @@ case "shot":
     try capture.run()
     capture.waitUntilExit()
     if capture.terminationStatus != 0 { fail("Could not capture the installed window.") }
+case "dictation-menu":
+    prepareInput()
+    key(109, flags: [.maskControl, .maskShift]) // Ctrl+Shift+F10 in the isolated fixture profile.
+    Thread.sleep(forTimeInterval: 0.6)
+    let capture = Process()
+    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    capture.arguments = ["-x", args[4]]
+    try capture.run()
+    capture.waitUntilExit()
+    click(CGPoint(x: rect.midX, y: rect.maxY - 45)) // A click outside ends mouse tracking.
+    Thread.sleep(forTimeInterval: 2.0) // Let the menu's fixture-only dismissal finish before Quit.
+    if capture.terminationStatus != 0 { fail("Could not capture the π menu.") }
 case "click":
     prepareInput()
     let frame = NSWindow.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 930, height: 710),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
-    let point = CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!)
-    for type: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
-        else { fail("Cannot create mouse event.") }
-        if type != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
-        event.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.04)
-    }
+    click(CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!))
 case "type":
     prepareInput()
-    for character in args[4] { key(0, text: String(character)) }
+    // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    guard pasteboard.setString(args[4], forType: .string) else { fail("Cannot copy the test address.") }
+    key(9, flags: .maskCommand) // Cmd+V
 case "expect-field":
     prepareInput()
     waitForFocusedField(args[4])

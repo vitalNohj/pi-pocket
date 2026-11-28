@@ -1,4 +1,4 @@
-import { offlineVoiceKey, registerDictationProvider } from "/voice.js";
+import { controlFocusedDictation, offlineVoiceKey, registerDictationProvider } from "/voice.js";
 import { store } from "/store.js";
 import { MODELS, modelById, modelSize } from "./catalog.js";
 import { cleanWords } from "./model-config.js";
@@ -26,7 +26,8 @@ function preferences(key) {
 
 export default function setup(pocket) {
     const { html, Switch, useEffect, useState } = pocket;
-    const engine = new BrowserEngine();
+    const desktop = window.pocketDictation?.apiVersion === 1 ? window.pocketDictation : null;
+    const engine = desktop ? null : new BrowserEngine();
     const listeners = new Set();
     let key = null;
     let unregister = null;
@@ -42,11 +43,26 @@ export default function setup(pocket) {
 
     function refresh() {
         unregister?.();
-        engine.drop();
-        unregister =
-            chosen() && captureAvailable()
-                ? registerDictationProvider(createRecognition(engine, () => preferences(key)))
-                : null;
+        engine?.drop();
+        unregister = null;
+
+        if (desktop && key) {
+            const connection = desktop.attach(controlFocusedDictation);
+
+            if (connection) {
+                const remove = registerDictationProvider(connection.Recognition);
+
+                unregister = () => {
+                    remove();
+                    connection.detach();
+                };
+            }
+        } else if (chosen() && captureAvailable()) {
+            unregister = registerDictationProvider(
+                createRecognition(engine, () => preferences(key)),
+            );
+        }
+
         listeners.forEach((listener) => listener());
     }
 
@@ -92,6 +108,21 @@ export default function setup(pocket) {
     const unsubscribe = store.subscribe(follow);
 
     follow();
+
+    if (desktop) {
+        pocket.menu({
+            id: "dictation",
+            label: "Dictation",
+            hint: "Manage speech models on this device",
+            run: () => desktop.settings(),
+        });
+
+        return () => {
+            unsubscribe();
+            unregister?.();
+        };
+    }
+
     window.addEventListener("storage", storage);
 
     function Settings() {

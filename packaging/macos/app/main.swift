@@ -196,6 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var launcher: Process?
     var lifeline: Pipe?
     var controller: ShellController?
+    lazy var dictation = DictationHost(self)
     var snapshot: [String: Any] = [:]
     var settings: ShellSettings?
     var page: ShellPage?
@@ -224,7 +225,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         if let self = self, let generation = self.page?.generation {
             self.report("badge", ["generation": generation, "count": count])
         }
-    }, action: { [weak self] action in self?.bridgeAction(action) }, notificationsEnabled: { [weak self] in self?.notices == true })
+    }, action: { [weak self] action in self?.bridgeAction(action) }, notificationsEnabled: { [weak self] in self?.notices == true },
+        dictation: { [weak self] view, data in self?.dictation.receive(view, data) })
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
@@ -385,6 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         quitting = true
         windowHotkey?.clear()
         windowDownloads.close()
+        dictation.close()
         controller?.close()
         closeSessionWindows()
         settings?.window.close()
@@ -502,7 +505,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? PocketNativeWindow else { return }
-        if let view = closing.chrome?.webView { sessionBridge.remove(view) }
+        if let view = closing.chrome?.webView {
+            dictation.detach(view)
+            sessionBridge.remove(view)
+        }
         guard closing === window else { return }
         visibilityChanged(visible: false)
         closing.saveFrame(usingName: "Pi Pocket")
@@ -584,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         sessionBridge.started(webView, navigation)
+        dictation.detach(webView)
         if webView === self.webView { pageCommitted = false }
     }
 
@@ -659,6 +666,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         sessionBridge.failed(webView, nil)
+        dictation.detach(webView)
         if webView !== self.webView { return }
         reportPage(pageOrigin(webView.url), hung: true)
         pageCommitted = false

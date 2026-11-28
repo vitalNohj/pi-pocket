@@ -71,10 +71,15 @@ namespace PiPocket
             {
                 if (args.NavigationId != navigation) { return; }
                 if (args.IsSuccess) { recovered = false; }
-                else if (args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled) { ShowPageNotice("Could not load this server. Check the address or try again."); }
+                else
+                {
+                    DetachDictation();
+                    if (args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled) { ShowPageNotice("Could not load this server. Check the address or try again."); }
+                }
             };
             core.ProcessFailed += delegate (object sender, CoreWebView2ProcessFailedEventArgs args)
             {
+                DetachDictation();
                 host.ReportPage(this, committed ? origin : null, true);
                 if (!recovered && args.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited)
                 {
@@ -94,8 +99,8 @@ namespace PiPocket
             await InitializeChrome(core.Environment);
             if (bridgeEnabled && !IsDisposed && generation == host.PageGeneration)
             {
-                bridge = new BridgeView(host.Bridge, this, core, origin, basePath, host.InvokeBridgeAction);
-                await bridge.Attach();
+                bridge = new BridgeView(host.Bridge, this, core, origin, basePath, host.InvokeBridgeAction, ReceiveDictation);
+                await bridge.Attach(InstallDictation());
             }
         }
 
@@ -137,6 +142,7 @@ namespace PiPocket
                 return;
             }
 
+            if (args.IsRedirected || navigation != args.NavigationId) { DetachDictation(); }
             navigation = args.NavigationId;
             ResetWindowPage();
             committed = false;
@@ -281,6 +287,7 @@ namespace PiPocket
 
         protected override void WndProc(ref Message message)
         {
+            if (message.Msg == DictationFixtureMenuMessage && ShowDictationFixtureMenu()) { return; }
             // Alt alone reveals the native menu. Alt+Space goes to the OS system menu.
             if (message.Msg == 0x0112 && (message.WParam.ToInt64() & 0xfff0) == 0xf100 && message.LParam == IntPtr.Zero && !fullScreen)
             {

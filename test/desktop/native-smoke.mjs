@@ -1,21 +1,22 @@
 // Run the installed app, not a copy of the Settings page. Input and screenshots come from the OS.
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { fixture } from "./fixture.mjs";
 
 const windows = process.platform === "win32";
-const [exe, input, out] = process.argv.slice(2).map((arg) => resolve(arg));
+const [exe, input, out, speechCache] = process.argv.slice(2).map((arg) => resolve(arg));
 const settingsTitle = "Desktop Settings — Pi Pocket";
 const stateFolder = await mkdtemp(join(tmpdir(), "pocket-desktop-smoke-"));
 const data = join(stateFolder, "server-data");
 const settings = join(stateFolder, "desktop.json");
 const environment = { ...process.env, PI_POCKET_DESKTOP_STATE: stateFolder, PI_POCKET_DIR: data };
-const remote = await fixture();
+const remote = await fixture({ dictation: Boolean(speechCache) });
 const exec = promisify(execFile);
 let app;
 
@@ -129,6 +130,19 @@ async function noLocalServer() {
 
 try {
     await mkdir(out, { recursive: true });
+
+    if (speechCache) {
+        // The installer’s offline engine smoke downloaded these pinned files. The native pipe rechecks them.
+        const models = join(stateFolder, "speech-models-v1");
+
+        await mkdir(models);
+        await cp(speechCache, join(models, "whisper-tiny"), { recursive: true });
+        await writeFile(join(models, "selected"), "whisper-tiny");
+        environment.PI_POCKET_DICTATION_SMOKE_PCM = fileURLToPath(
+            new URL("../fixtures/dictation-jfk.pcm", import.meta.url),
+        );
+    }
+
     app = await start();
     await until("a fresh desktop settings file", () => stat(settings).catch(() => null));
     await waitForSettings(1);
@@ -136,6 +150,16 @@ try {
     assert.equal((await prefs()).window.titleBar, "seamless");
     await noLocalServer();
     await shot(settingsTitle, "home-fresh-install");
+
+    if (speechCache) {
+        await gui("click", settingsTitle, 95, 217); // Dictation in the installed sidebar.
+        await shot(settingsTitle, "dictation-settings");
+        assert.notDeepEqual(
+            await readFile(join(out, "dictation-settings.png")),
+            await readFile(join(out, "home-fresh-install.png")),
+            "the Dictation screenshot is not another Home screenshot",
+        );
+    }
 
     // The installed Settings asset has a fixed sidebar and starts with the Home section.
     // The OS adapters convert these viewport points to screen coordinates.
@@ -202,6 +226,29 @@ try {
     );
     await noLocalServer();
     await shot("Pi Pocket", "home-connected-fixture");
+
+    if (speechCache) {
+        const seen = (suffix) =>
+            remote.requests.some(({ path }) => path.endsWith(`/speech-${suffix}`));
+
+        await until("the fixture attached the native dictation capability", () => seen("ready"));
+        await gui("click", "Pi Pocket", 172, 199);
+        await until(
+            "speech from the installed native capture path reached the draft",
+            () => seen("pass") || seen("error") || seen("mismatch"),
+            110_000,
+        );
+        assert(
+            seen("pass"),
+            "The native capture pipe must transcribe the fixture without sending words to its server.",
+        );
+        const menu = join(out, "dictation-menu.png");
+
+        await gui("dictation-menu", "Pi Pocket", menu);
+        assert((await stat(menu)).size > 4000, "the native menu screenshot is not empty");
+        console.log("The installed native capture pipe transcribed the fixture offline.");
+    }
+
     console.log(
         "Check did not connect. Connect used the base path. The fixture had no Desktop Settings API or local credentials.",
     );

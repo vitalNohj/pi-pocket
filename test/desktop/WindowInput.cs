@@ -1,5 +1,6 @@
 // This driver runs on the interactive Windows installer runner. It is not shipped with the app.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -68,6 +69,7 @@ static class WindowInput
             {
                 case "expect-field": WaitForFocusedField(window, args[3]); break;
                 case "shot": Screenshot(window, args[3]); break;
+                case "dictation-menu": DictationMenu(pid, window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
                 default: throw new ArgumentException("Unknown test operation.");
@@ -143,11 +145,60 @@ static class WindowInput
         mouse_event(4, 0, 0, 0, UIntPtr.Zero);
     }
 
+    static HashSet<IntPtr> VisibleWindows(int pid)
+    {
+        var visible = new HashSet<IntPtr>();
+        EnumWindows(delegate(IntPtr window, IntPtr ignored)
+        {
+            int owner;
+            GetWindowThreadProcessId(window, out owner);
+            if (owner == pid && IsWindowVisible(window)) { visible.Add(window); }
+            return true;
+        }, IntPtr.Zero);
+        return visible;
+    }
+
+    static void DictationMenu(int pid, IntPtr window, string path)
+    {
+        var before = VisibleWindows(pid);
+        const int fixtureMenu = 0x8031; // Ask the isolated installed app to show its actual tray menu.
+        if (!PostMessage(window, fixtureMenu, IntPtr.Zero, IntPtr.Zero))
+        {
+            throw new InvalidOperationException("Cannot ask the installed app to show the tray menu.");
+        }
+
+        Stopwatch wait = Stopwatch.StartNew();
+        while (wait.Elapsed.TotalSeconds < 8)
+        {
+            var shown = VisibleWindows(pid);
+            shown.ExceptWith(before);
+            if (shown.Count != 0)
+            {
+                // Let the menu paint and verify that the popup stayed open for the screenshot.
+                Thread.Sleep(250);
+                shown.IntersectWith(VisibleWindows(pid));
+                if (shown.Count != 0)
+                {
+                    Capture(SystemInformation.VirtualScreen, path);
+                    SendKeys.SendWait("{ESC}");
+                    return;
+                }
+            }
+            Thread.Sleep(100);
+        }
+        throw new InvalidOperationException("The installed app did not show the dictation tray menu.");
+    }
+
     static void Screenshot(IntPtr window, string path)
     {
         Rect rect;
         if (!GetWindowRect(window, out rect)) { throw new InvalidOperationException("Cannot measure the installed window."); }
         Rectangle bounds = Rectangle.Intersect(Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom), SystemInformation.VirtualScreen);
+        Capture(bounds, path);
+    }
+
+    static void Capture(Rectangle bounds, string path)
+    {
         using (var image = new Bitmap(bounds.Width, bounds.Height))
         using (Graphics graphics = Graphics.FromImage(image))
         {

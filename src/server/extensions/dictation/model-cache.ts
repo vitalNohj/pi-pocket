@@ -108,7 +108,7 @@ export class ModelCache {
                 throw new HttpError(507, "The server's speech model cache is not a folder.");
             }
 
-            if (!(await this.#checked(file, path))) {
+            if (!(await this.#checked(file, path, signal))) {
                 if (this.#writing) {
                     throw new HttpError(
                         429,
@@ -141,7 +141,28 @@ export class ModelCache {
         }
     }
 
-    async #checked(file: ModelFile, path: string) {
+    /** Open an installed pin without making a network request, including when it is missing or damaged. */
+    async installedFile(file: ModelFile, signal: AbortSignal) {
+        if (!DIGEST.test(file.sha256) || !Number.isSafeInteger(file.size) || file.size < 1) {
+            throw new Error("Invalid pinned speech file");
+        }
+
+        const path = join(this.#root, file.sha256);
+
+        if (
+            !(await lstat(this.#root).catch(() => undefined))?.isDirectory() ||
+            !(await this.#checked(file, path, signal))
+        ) {
+            throw new HttpError(
+                404,
+                "A speech file is missing or damaged. Download the model again.",
+            );
+        }
+
+        return path;
+    }
+
+    async #checked(file: ModelFile, path: string, signal?: AbortSignal) {
         const stat = await lstat(path).catch(() => undefined);
 
         if (!stat?.isFile() || stat.size !== file.size) {
@@ -153,7 +174,7 @@ export class ModelCache {
         if (this.#verified.get(file.sha256) !== stamp) {
             const hash = createHash("sha256");
 
-            for await (const chunk of createReadStream(path, { end: file.size - 1 })) {
+            for await (const chunk of createReadStream(path, { end: file.size - 1, signal })) {
                 hash.update(chunk);
             }
 

@@ -187,7 +187,8 @@ done
 
 for arch in arm64 x86_64; do
     swiftc -O -swift-version 5 -target "$arch-apple-macos13.5" -framework Cocoa -framework WebKit \
-        -framework UserNotifications -framework Carbon -o "$work/app-$arch" "$work/main.swift" "${app_sources[@]}"
+        -framework UserNotifications -framework Carbon -framework AVFoundation \
+        -o "$work/app-$arch" "$work/main.swift" "${app_sources[@]}"
     swiftc -O -swift-version 5 -parse-as-library -target "$arch-apple-macos13.5" \
         -o "$work/runner-host-$arch" "$runner_source"
 done
@@ -211,8 +212,15 @@ for name in controller protocol settings feed; do
 done
 cp "$here/../desktop/bridge/bootstrap.js" "$bundle/Resources/PocketBridge.js"
 cp "$here/../desktop/window/host.js" "$bundle/Resources/window-host.js"
+speech_bundler="$repo/packaging/desktop/bundle-dictation.mjs"
+speech_runtime="$bundle/Resources/desktop-assets/controller/dictation/runtime"
+if $desktop_only; then
+    node "$speech_bundler" "$checkout" "$speech_runtime" --from-checkout
+else
+    "$root/node/bin/node" "$speech_bundler" "$root/app.new/lib/node_modules/pi-pocket" "$speech_runtime"
+fi
 if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
-    codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp "$root/Pi Pocket.app"
+    codesign --force --sign "$APP_SIGN_IDENTITY" --options runtime --timestamp --entitlements "$here/resources/Dictation.entitlements" "$root/Pi Pocket.app"
 else
     codesign --force --sign - --timestamp=none "$root/Pi Pocket.app"
 fi
