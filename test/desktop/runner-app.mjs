@@ -86,14 +86,17 @@ const prefs = async () =>
 async function fill(label, text, title = settings, replace = false) {
     await focus(label, title);
 
-    if (replace) {
-        await input("selectAll", title);
+    if (windows && label === "Go to a path") {
+        // Use literal text rather than SendKeys syntax for a path from the Windows test runner.
+        await input("paste", title, text);
+    } else {
+        if (replace) {
+            await input("selectAll", title);
+        }
+
+        await input("type", title, text);
     }
 
-    // SendKeys interprets a tilde in a Windows short path as Enter. Send the fixture text literally.
-    const keys = windows ? text.replace(/[+^%~(){}[\]]/g, (key) => `{${key}}`) : text;
-
-    await input("type", title, keys);
     await input("expect-field", title, text);
 }
 
