@@ -196,7 +196,9 @@ func selectFile(_ path: String) {
     let panel = waitForElement("the installer Open sheet", timeout: 8) {
         let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
         guard let owner = windows.first(where: { hasName($0, title) }) else { return nil }
-        return (attribute(owner, kAXSheetsAttribute) as? [AXUIElement])?.first
+        let sheets = attribute(owner, "AXSheets") as? [AXUIElement] ?? []
+        let children = attribute(owner, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        return (sheets + children).first { attribute($0, kAXRoleAttribute) as? String == "AXSheet" }
     }
     prepareInput()
     let previous = focus()
@@ -219,7 +221,7 @@ func selectFile(_ path: String) {
     }
     key(36) // Go to the file.
     let open = waitForElement("the enabled Open button after Go to Folder", timeout: 6) {
-        guard let field = focus(), !CFEqual(field, pathField),
+        guard focus().map({ !CFEqual($0, pathField) }) ?? true,
             let button = named([panel], "Open", role: kAXButtonRole),
             attribute(button, kAXEnabledAttribute) as? Bool == true else { return nil }
         return button
