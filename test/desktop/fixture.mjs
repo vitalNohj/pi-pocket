@@ -1,4 +1,76 @@
+import assert from "node:assert/strict";
+import { readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
+import { dirname, join } from "node:path";
+
+// Both installer layouts put the separately packed server and runner in a private npm prefix.
+export function installedModules() {
+    const bin = dirname(process.execPath);
+
+    return process.platform === "win32"
+        ? join(bin, "..", "app", "node_modules")
+        : join(bin, "..", "..", "app", "lib", "node_modules");
+}
+
+export async function runningLocal(dataDir) {
+    const file = join(dataDir, "launcher-running.json");
+    const record = await readFile(file, "utf8").catch((error) => {
+        if (error.code === "ENOENT") {
+            return undefined;
+        }
+
+        throw error;
+    });
+
+    if (record === undefined) {
+        return undefined;
+    }
+
+    const { version, pid, url } = JSON.parse(record);
+    const address = new URL(url);
+
+    assert.equal(version, 1);
+    assert(Number.isSafeInteger(pid) && pid > 0);
+    assert.equal(address.protocol, "http:");
+    assert.equal(address.hostname, "127.0.0.1");
+    const info = await fetch(new URL("/api/pocket/info", address), {
+        redirect: "error",
+        signal: AbortSignal.timeout(1500),
+    }).catch(() => null);
+
+    if (info?.ok && (await info.json()).name === "pi-pocket") {
+        return { pid, address: address.origin };
+    }
+}
+
+export async function sameFolder(actual, expected) {
+    // The runner returns the real path, for example /private/var on macOS.
+    assert.equal(await realpath(actual), await realpath(expected));
+}
+
+// Observe selected JSON replies from the real web UI. Do not print bodies, request headers or URLs.
+export function observeReply(response, observe) {
+    const end = response.end;
+
+    response.end = function (body, ...args) {
+        if (typeof body === "string" && this.statusCode === 200) {
+            observe(JSON.parse(body));
+        }
+
+        return Reflect.apply(end, this, [body, ...args]);
+    };
+}
+
+export async function browserSignIn(app, address, person) {
+    const signed = await fetch(`${address}/api/sign-in-link`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${app.config.addDevice(person.id)}`, "X-Pocket": "1" },
+    });
+
+    assert.equal(signed.status, 200, "the disposable server issued a one-time browser sign-in");
+
+    return (await signed.json()).path;
+}
 
 const speechPage = `
     <button id="dictate" style="position:absolute;top:160px;left:55px;width:290px;height:85px">Dictate from native capture fixture</button>

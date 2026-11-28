@@ -91,6 +91,10 @@ static class WindowInput
                 case "dictation-menu": DictationMenu(pid, window, args[3]); break;
                 case "click": Click(window, int.Parse(args[3], CultureInfo.InvariantCulture), int.Parse(args[4], CultureInfo.InvariantCulture)); break;
                 case "type": SendKeys.SendWait(args[3]); break;
+                case "paste":
+                    Clipboard.SetText(args[3]);
+                    SendKeys.SendWait("^a^v");
+                    break;
                 case "type-private":
                     string code = Console.ReadLine();
                     if (code == null || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$"))
@@ -252,21 +256,37 @@ static class WindowInput
     {
         // Poll observations only. Do not post more input or change the field.
         Stopwatch wait = Stopwatch.StartNew();
+        string lastFocus = "No focus observation.";
         while (wait.Elapsed.TotalSeconds < 5)
         {
             try
             {
+                IntPtr foreground = GetForegroundWindow();
+                var title = new StringBuilder(256);
+                GetWindowText(foreground, title, title.Capacity);
+                string observation = "Foreground window '" + title + "' (" + foreground + ").";
                 AutomationElement field = AutomationElement.FocusedElement;
-                object pattern;
-                if (GetForegroundWindow() == window && field != null &&
-                    field.Current.ControlType == ControlType.Edit &&
-                    field.TryGetCurrentPattern(ValuePattern.Pattern, out pattern) &&
-                    ((ValuePattern)pattern).Current.Value == expected) { return; }
+                if (field == null)
+                {
+                    lastFocus = observation + " No focused element.";
+                }
+                else
+                {
+                    var current = field.Current;
+                    var type = current.ControlType;
+                    object pattern;
+                    string value = current.IsPassword ? "<protected>" :
+                        field.TryGetCurrentPattern(ValuePattern.Pattern, out pattern) ?
+                        ((ValuePattern)pattern).Current.Value : null;
+                    if (foreground == window && type == ControlType.Edit && value == expected) { return; }
+                    lastFocus = observation + " Focused " + type.ProgrammaticName + " '" + current.Name +
+                        "', Value '" + (value ?? "<not available>") + "'.";
+                }
             }
             catch (ElementNotAvailableException) { } // The WebView can replace an accessibility node while rendering.
             Thread.Sleep(100);
         }
-        throw new InvalidOperationException("The focused Server address field did not contain the fixture address.");
+        throw new InvalidOperationException("The focused field did not contain the fixture text. " + lastFocus);
     }
 
     static IntPtr WaitForWindow(int pid, string title)
