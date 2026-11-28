@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { DesktopController } from "../../packaging/desktop/controller/index.mjs";
 import { registerRunner } from "../../packaging/desktop/controller/runner/desktop.mjs";
 
@@ -91,6 +92,16 @@ async function fixture(t) {
     };
 
     await desktop.load();
+
+    // Startup queues a diagnostics write. Let it finish before this fixture can remove the folder.
+    const deadline = Date.now() + 5000;
+    const log = join(folder, "diagnostics.log");
+
+    while (!(await readFile(log, "utf8").catch(() => "")).includes("controller.start: ok\n")) {
+        assert.ok(Date.now() < deadline, "the controller wrote its startup diagnostic");
+        await sleep(20);
+    }
+
     await receive("subscribe");
     await runner.boot();
 
