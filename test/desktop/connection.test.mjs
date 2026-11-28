@@ -31,12 +31,15 @@ async function desktop(t, existingInstall = false, folder = undefined) {
                 hosts.push(packet.action);
                 const local = {
                     status: "running",
-                    owned: true,
+                    owned: existingInstall,
                     verified: true,
                     address: "http://127.0.0.1:3469",
                 };
 
-                if (packet.action === "local.stop" || packet.action === "local.inspect") {
+                if (
+                    packet.action === "local.stop" ||
+                    (packet.action === "local.inspect" && !existingInstall)
+                ) {
                     Object.assign(local, { status: "stopped", owned: false, verified: false });
                     delete local.address;
                 }
@@ -89,7 +92,7 @@ test("a new install starts on Home and upgrades keep local startup", async (t) =
     const migration = await desktop(t, true);
 
     await migration.controller.begin();
-    assert.deepEqual(migration.hosts, ["local.open"]);
+    assert.deepEqual(migration.hosts, ["local.inspect"]);
     assert.equal(migration.controller.snapshot().home.active.mode, "local");
     assert.equal(migration.controller.snapshot().preferences.window.titleBar, "system");
     await migration.action("home.local.stop");

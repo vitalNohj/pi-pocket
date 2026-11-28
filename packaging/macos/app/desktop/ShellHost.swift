@@ -226,6 +226,7 @@ extension AppDelegate {
         case "updates.openDownload", "updates.pickInstaller":
             handleUpdateOperation(action, data, reply: reply)
             return
+        case "local.pickFolder": pickLocalFolder(data, reply: reply); return
         case "local.inspect", "local.open", "local.stop", "local.restart":
             if action == "local.restart", local?.pid != launcher?.processIdentifier {
                 let alert = NSAlert()
@@ -238,15 +239,21 @@ extension AppDelegate {
                 let outcome: Result<Any, Error>
                 do {
                     switch action {
-                    case "local.inspect": outcome = .success(self.inspectLocal())
-                    case "local.open": outcome = .success(self.openLocal())
+                    case "local.inspect":
+                        guard let path = data["data"] as? String, path.hasPrefix("/") else { throw shellError("Choose a data folder.") }
+                        outcome = .success(self.inspectLocal(data: URL(fileURLWithPath: path, isDirectory: true)))
+                    case "local.open":
+                        let wanted = try LocalLaunchSettings(data["settings"] as? [String: Any] ?? [:])
+                        outcome = .success(try self.openLocal(wanted, replace: data["replace"] as? Bool == true))
                     case "local.stop": try self.stopLocal(); outcome = .success(self.localSnapshot("stopped"))
                     default:
                         guard let local = self.local else { throw shellError("The local server is not running.") }
                         _ = try verifiedOwnerRequest(local, "api/restart")
                         outcome = .success(NSNull())
                     }
-                } catch { outcome = .failure(shellError("Pi Pocket could not \(action == "local.stop" ? "stop" : "restart") the local server.")) }
+                } catch {
+                    outcome = .failure(action == "local.restart" ? shellError("Could not restart the verified local server.") : error)
+                }
                 DispatchQueue.main.async { reply(outcome) }
             }
             return

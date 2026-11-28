@@ -13,13 +13,6 @@ let newSessionNotice = Notification.Name("io.github.tannermidd.pi-pocket.app.new
 let quitNotice = Notification.Name("io.github.tannermidd.pi-pocket.app.quit")
 let home = FileManager.default.homeDirectoryForCurrentUser
 let appFolder = home.appendingPathComponent("Library/Application Support/Pi Pocket")
-let dataFolder: URL = {
-    if let data = ProcessInfo.processInfo.environment["PI_POCKET_DIR"], !data.isEmpty {
-        return URL(fileURLWithPath: (data as NSString).expandingTildeInPath)
-    }
-
-    return home.appendingPathComponent(".pi-pocket")
-}()
 let logFolder = home.appendingPathComponent("Library/Logs/Pi Pocket")
 let logFile = logFolder.appendingPathComponent("launcher.log")
 
@@ -104,8 +97,8 @@ func packageProblem() -> (title: String, advice: String)? {
     return nil
 }
 
-func ownerToken() throws -> String {
-    let data = try Data(contentsOf: dataFolder.appendingPathComponent("config.json"))
+func ownerToken(_ folder: URL) throws -> String {
+    let data = try Data(contentsOf: folder.appendingPathComponent("config.json"))
 
     guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
         let token = config["ownerToken"] as? String
@@ -194,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     var popups: [NSWindow: NSObjectProtocol] = [:]
     var statusItem: NSStatusItem?
     var launcher: Process?
+    var launcherSettings: LocalLaunchSettings?
     var lifeline: Pipe?
     var controller: ShellController?
     lazy var dictation = DictationHost(self)
@@ -320,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         return false
     }
 
-    func startLauncher() throws {
+    func startLauncher(_ settings: LocalLaunchSettings) throws {
         let script = appFolder.appendingPathComponent("pi-pocket")
 
         guard FileManager.default.isExecutableFile(atPath: script.path) else {
@@ -354,8 +348,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         let input = Pipe()
 
         process.executableURL = URL(fileURLWithPath: shell)
-        // The data folder by name: the login shell may set PI_POCKET_DIR to another one than this app reads.
-        process.arguments = ["-l", "-c", "exec \"$0\" --desktop --data \"$1\"", script.path, dataFolder.path]
+        // The shell supplies the PATH, but never interprets the values from Desktop Settings.
+        process.arguments = ["-l", "-c", "exec \"$0\" --desktop \"$@\"", script.path,
+            "--data", settings.data, "--cwd", settings.folder, "--port", String(settings.port), "--access", settings.access]
         process.currentDirectoryURL = home
         process.standardInput = input
         process.standardOutput = output
@@ -369,12 +364,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         }
         // Before it runs: one that ends at once must still count as this app's launcher.
         launcher = process
+        launcherSettings = settings
         lifeline = input
 
         do {
             try process.run()
         } catch {
             launcher = nil
+            launcherSettings = nil
             lifeline = nil
 
             throw error

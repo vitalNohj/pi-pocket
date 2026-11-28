@@ -323,11 +323,13 @@ case "click":
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     let point = CGPoint(x: rect.minX + Double(args[4])!, y: rect.minY + frame.height - 710 + Double(args[5])!)
     pointAt(point, click: true)
-case "press", "expect-text", "expect-prefix", "focus-field":
+case "press", "expect-text", "expect-prefix", "focus-field", "focus-choice":
     prepareInput()
     guard AXIsProcessTrusted() else { fail("The app's input driver needs Accessibility permission.") }
     let app = AXUIElementCreateApplication(pid)
-    if operation == "focus-field" {
+    if operation == "focus-choice" {
+        clickCenter(waitForNamed([app], args[4], role: "AXPopUpButton"))
+    } else if operation == "focus-field" {
         // Match the editable control, not the adjacent static text with the same name.
         let field = waitForNamed([app], args[4], role: kAXTextFieldRole)
         clickCenter(field)
@@ -342,6 +344,9 @@ case "press", "expect-text", "expect-prefix", "focus-field":
 case "new":
     prepareInput()
     key(45, flags: .maskCommand) // Cmd+N
+case "settings":
+    prepareInput()
+    key(43, flags: .maskCommand) // Cmd+Comma
 case "selectAll":
     prepareInput()
     key(0, flags: .maskCommand) // Cmd+A
@@ -349,7 +354,7 @@ case "chooseNext":
     prepareInput()
     key(125) // Down
     key(36) // Return
-case "type":
+case "type", "paste":
     prepareInput()
     // Paste the fixture address as one edit. WKWebView can delay individual Quartz key events while checking spelling.
     let pasteboard = NSPasteboard.general
