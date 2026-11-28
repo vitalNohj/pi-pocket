@@ -20,6 +20,7 @@ import { DiffBlock } from "./diff.js";
 import { pageVisible } from "./host.js";
 import { LinkedSessions } from "./linked-sessions.js";
 import { markdownRevision } from "./markdown-ext.js";
+import { firstNear, nearSpacer } from "./near-rows.js";
 import { personStorage } from "./person-storage.js";
 import { quoteParts } from "./quote-text.js";
 import { fromServer } from "./seen.js";
@@ -44,7 +45,7 @@ import {
     viewSynced,
 } from "./store.js";
 import { openSubagent, stateOf } from "./subagents.js";
-import { motionLevel, prefs } from "./theme.js";
+import { BASE_LOOK, motionLevel, prefs } from "./theme.js";
 import {
     diffCounts,
     itemsOf,
@@ -3055,7 +3056,7 @@ function partialEntry(blocks) {
  * The transcript's items, each rendered again only when what it shows changed. A group is live while one of its calls
  * works or waits, or while it is the last thing in a run; groups after the last person's message are the newest turn.
  */
-function Items({ items, results, slots, approvals, busy, past = false, conversationId }) {
+function Items({ items, skip = 0, results, slots, approvals, busy, past = false, conversationId }) {
     let lastMessage = -1;
     const actions = slotKey("reply");
 
@@ -3066,6 +3067,10 @@ function Items({ items, results, slots, approvals, busy, past = false, conversat
     });
 
     return items.flatMap((item, index) => {
+        if (index < skip) {
+            return [];
+        }
+
         if (item.type === "row") {
             return html`<${Memo} key=${item.key} deps=${rowDeps(item.entry)}>
                 <${EntryView} entry=${item.entry} />
@@ -3614,7 +3619,9 @@ function endOf(element, column, glide, base) {
 
 /** What the column holds that is not a row of the session: it comes and goes, so nothing is measured by it. */
 const passing = (element) =>
-    element.matches(".live-line, .live-thought, .approval, .shell-row.pending, .divider");
+    element.matches(
+        ".live-line, .live-thought, .approval, .shell-row.pending, .divider, .near-gap",
+    );
 
 /**
  * Where the row the reader looks at is, before a draw changes the rows: at the bottom, the last row's lower edge; else
@@ -3723,6 +3730,8 @@ export function Transcript() {
     // A kept session that changed while the tab was away, behind the loading screen until its changes come.
     const held = holding !== null && holding === store.state.conversationId;
     const scroller = useRef(null);
+    const gap = useRef(null);
+    const followed = useRef(null);
     /** The column of rows in the scroller, whose growth keeps it at the bottom (below). */
     const column = useRef(null);
     // A kept session opens where the reader was in it (`transcriptPlace`), or at the bottom.
@@ -3768,6 +3777,10 @@ export function Transcript() {
     /** Down to the bottom, the one without a glide's offset (`endOf`). */
     const toEnd = (element) => {
         element.scrollTop = endOf(element, column.current, glide.current, glideBase.current);
+
+        if (gap.current !== null) {
+            followed.current = element.scrollTop;
+        }
     };
 
     /** The startup draw can run behind the boot screen. Keep the distance until the scroller has a viewport. */
@@ -3843,6 +3856,130 @@ export function Transcript() {
         () => itemsOf(rows.slice(start), partial, { from, talk }),
         [rows, start, partial, from, talk],
     );
+    // Defer only an older prefix of the normal window. Once filled, never defer these rows again in this open session.
+    const nearHead = useRef(undefined);
+    const [, fill] = useState(false);
+    const expansion = useRef(null);
+    const { nearRows, look } = prefs();
+    const near = nearRows === true && look === BASE_LOOK;
+    const canDefer = near && !rows.some((row) => row.presentation !== undefined);
+
+    if (nearHead.current === undefined && !held && !missing && items.length > 0) {
+        const index =
+            canDefer && CSS.supports("overflow-anchor", "auto")
+                ? firstNear(items, keep.current, innerHeight)
+                : 0;
+
+        nearHead.current = index > 0 ? items[index].key : null;
+    }
+
+    const skip =
+        canDefer && !refreshed && nearHead.current != null
+            ? Math.max(
+                  0,
+                  items.findIndex((item) => item.key === nearHead.current),
+              )
+            : 0;
+
+    if (skip === 0 && nearHead.current != null) {
+        if (!refreshed) {
+            expansion.current = expansionPlace(scroller.current);
+        }
+
+        nearHead.current = null;
+    }
+
+    /** Preserve a real row outside the gap. Inside it (e.g. a scrollbar drag), keep the fraction of the prefix. */
+    function expansionPlace(element) {
+        if (
+            gap.current === null ||
+            !element?.clientHeight ||
+            keep.current !== null ||
+            stick.current
+        ) {
+            return null;
+        }
+
+        const top = element.scrollTop;
+        const height = gap.current.offsetHeight;
+        const bottom = gapBottom();
+        const start = bottom - height;
+        const reading = top >= bottom ? anchorOf(element, column.current, false) : null;
+
+        return { top, start, height, reading, first: gap.current.nextElementSibling };
+    }
+
+    function gapBottom() {
+        const col = column.current;
+
+        return (
+            col.offsetTop +
+            gap.current.getBoundingClientRect().bottom -
+            col.getBoundingClientRect().top
+        );
+    }
+
+    function showAll(preserve = true) {
+        if (gap.current !== null && nearHead.current != null) {
+            expansion.current = preserve ? expansionPlace(scroller.current) : null;
+            nearHead.current = null;
+            fill(true);
+        }
+    }
+
+    // Do not spend a saved position on the estimate if the actual rows did not cover that position.
+    function fillForRestore(element) {
+        if (gap.current === null) {
+            return false;
+        }
+
+        const distance = keep.current ?? element.clientHeight;
+        const top = Math.max(0, element.scrollHeight - Math.max(distance, element.clientHeight));
+
+        if ((keep.current !== null || stick.current) && top < gapBottom()) {
+            showAll(false);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    function restoreExpansion(element) {
+        if (expansion.current === null || skip !== 0) {
+            return;
+        }
+
+        const { top, start, height, reading, first } = expansion.current;
+
+        expansion.current = null;
+
+        if (
+            anchor.current !== null ||
+            keep.current !== null ||
+            stick.current ||
+            !element.clientHeight
+        ) {
+            return;
+        }
+
+        const now = reading === null ? null : placeOf(element, column.current, reading);
+
+        if (now !== null) {
+            element.scrollTop += now - reading.at;
+        } else if (top > start && height > 0 && first !== null && column.current.contains(first)) {
+            const afterPrefix = placeOf(element, column.current, { row: first });
+
+            element.scrollTop =
+                start + ((top - start) / height) * (afterPrefix + element.scrollTop - start);
+        } else {
+            element.scrollTop = top;
+        }
+
+        restoredTop.current = element.scrollTop;
+        setShowJump(element.scrollHeight - element.clientHeight - element.scrollTop >= 60);
+    }
+
     const results = useMemo(() => {
         const map = new Map();
 
@@ -3929,7 +4066,9 @@ export function Transcript() {
             setShowJump(false);
         }
 
-        if (element.clientHeight > 0) {
+        if (element.clientHeight > 0 && (gap.current === null || !fillForRestore(element))) {
+            restoreExpansion(element);
+
             if (!restorePlace(element) && stick.current && anchor.current?.id === undefined) {
                 toEnd(element);
             }
@@ -3959,7 +4098,7 @@ export function Transcript() {
         } else if (grew && stick.current && rows.length - start > 2 * TRANSCRIPT_ROWS) {
             store.set({ transcriptFrom: rows[rows.length - TRANSCRIPT_ROWS].id });
         }
-    }, [view, history, start, held]);
+    }, [view, history, start, held, skip]);
 
     /**
      * The catch-up's rows are drawn and the scroller is where it goes (above): what the reader looked at moves no more
@@ -4053,6 +4192,10 @@ export function Transcript() {
 
                     if (stick.current) {
                         element.scrollTop = element.scrollHeight;
+
+                        if (gap.current !== null) {
+                            followed.current = element.scrollTop;
+                        }
                     }
                 }
             },
@@ -4147,7 +4290,7 @@ export function Transcript() {
             performance.now() - pressed < OPENED_MS &&
             changes.every((change) => change.target !== element);
         const observer = new ResizeObserver((changes) => {
-            if (element.clientHeight === 0) {
+            if (element.clientHeight === 0 || (gap.current !== null && fillForRestore(element))) {
                 return;
             }
 
@@ -4183,6 +4326,42 @@ export function Transcript() {
             element.removeEventListener("keydown", press, { capture: true });
         };
     }, [view.conversation?.id, held]);
+
+    // A jump needs its target before chat.js's next frame. Native selection and keyboard focus need a continuous DOM.
+    useLayoutEffect(() => {
+        if (skip === 0) {
+            return;
+        }
+
+        const reveal = () => showAll(false);
+
+        const select = (event) => {
+            if (scroller.current?.contains(event.target)) {
+                showAll();
+            }
+        };
+
+        const key = (event) => {
+            if (
+                event.key === "Tab" ||
+                (!event.target.closest?.("input, textarea, [contenteditable]") &&
+                    ((event.shiftKey && /^(Arrow|Home|End|Page)/.test(event.key)) ||
+                        ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a")))
+            ) {
+                showAll();
+            }
+        };
+
+        document.addEventListener("pocket:reveal", reveal);
+        document.addEventListener("selectstart", select, true);
+        document.addEventListener("keydown", key, true);
+
+        return () => {
+            document.removeEventListener("pocket:reveal", reveal);
+            document.removeEventListener("selectstart", select, true);
+            document.removeEventListener("keydown", key, true);
+        };
+    }, [skip > 0]);
 
     // A jump to a message (`jumpToEntry`) leaves the bottom, until the reader scrolls or taps: its smooth scroll starts
     // near the bottom, where `onScroll` would follow along again, and the next update (earlier rows that load for it)
@@ -4289,8 +4468,29 @@ export function Transcript() {
             endOf(element, column.current, glide.current, glideBase.current) - element.scrollTop <
             60;
 
+        if (
+            !atBottom &&
+            gap.current !== null &&
+            stick.current &&
+            followed.current !== null &&
+            Math.abs(element.scrollTop - followed.current) < 60
+        ) {
+            // A small clamp during resize is not the reader moving away from the bottom.
+            return;
+        }
+
         stick.current = atBottom && !jumping.current;
         place(element, "scroll");
+
+        if (gap.current !== null) {
+            if (stick.current) {
+                followed.current = element.scrollTop;
+            }
+
+            if (element.scrollTop - gapBottom() < element.clientHeight / 2) {
+                showAll();
+            }
+        }
 
         if (showJump === atBottom) {
             setShowJump(!atBottom);
@@ -4340,6 +4540,8 @@ export function Transcript() {
     };
 
     const showEarlier = () => {
+        showAll();
+
         if (start >= TRANSCRIPT_ROWS || unloaded === 0) {
             keepPlace();
             store.set({ transcriptFrom: rows[Math.max(0, start - TRANSCRIPT_ROWS)].id });
@@ -4390,7 +4592,12 @@ export function Transcript() {
             ? undefined
             : sessions.find((each) => each.id === conversation.id && each.failed === true)?.failure;
 
-    return html`<main class="scroller" ref=${scroller} onScroll=${onScroll}>
+    return html`<main
+        class="scroller"
+        ref=${scroller}
+        onScroll=${onScroll}
+        data-near-follow=${skip > 0 && stick.current ? "" : undefined}
+    >
         <div
             class=${`transcript ${entrance.current} ${catching() ? "catching" : ""}`}
             data-part="transcript"
@@ -4434,8 +4641,19 @@ export function Transcript() {
                     </p>
                 </div>`
             }
+            ${
+                skip > 0 &&
+                html`<div
+                    key="near-gap"
+                    class="near-gap"
+                    ref=${gap}
+                    aria-hidden="true"
+                    style=${{ height: nearSpacer(items, skip) }}
+                ></div>`
+            }
             <${Items}
                 items=${items}
+                skip=${skip}
                 results=${results}
                 slots=${slots}
                 approvals=${approvals}

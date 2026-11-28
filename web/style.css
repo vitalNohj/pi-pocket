@@ -1793,6 +1793,16 @@ kbd {
     line-height: var(--leading);
 }
 
+/* Do not anchor to an estimate. While following, only the app places the scroll; while reading it is native. */
+.transcript > .near-gap,
+.scroller[data-near-follow] {
+    overflow-anchor: none;
+}
+
+.transcript > .near-gap {
+    flex: none;
+}
+
 /* A session opened rises into place; on a phone, where the route slides it in, the slide alone (`transcript.js`). */
 .transcript.rising {
     animation: rise-in 0.36s var(--ease-out);

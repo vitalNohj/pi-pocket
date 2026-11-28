@@ -104,6 +104,8 @@ const DEFAULTS = {
      * come, then show it whole. Off, the tab's copy of it shows at once and the updates slide in (`holdsFor` in store.js).
      */
     waitForUpdates: false,
+    /** On open, start with the rows around the reader; fill the older rows when the reader needs them. */
+    nearRows: false,
     /** This browser's own layout of each slot (`slots.js`): `{ [slot]: { order: [ids], hidden: { [id]: boolean } } }`. */
     layout: {},
 };
@@ -745,6 +747,12 @@ export function motionLevel() {
 const reducedMotion = () => motionLevel() === "reduced";
 
 /** Put the current look on the page: variables, mode, and the switches style.css reads from data attributes. */
+let markdownLook;
+let lookRevision = 0;
+
+/** Changes when the effective colors or the versioned stylesheets change, not when unrelated preferences move. */
+export const markdownThemeRevision = () => lookRevision;
+
 export function apply() {
     const root = document.documentElement;
     const p = prefs();
@@ -803,6 +811,21 @@ export function apply() {
         density: p.density,
         width: WIDTHS[p.width] ? p.width : "comfortable",
     };
+
+    const look = JSON.stringify([
+        attrs.theme,
+        attrs.colors,
+        attrs.mode,
+        vars,
+        sheets ?? cached.css ?? [],
+    ]);
+
+    if (look !== markdownLook) {
+        markdownLook = look;
+        lookRevision++;
+        // System color changes can call apply without a store update. Notify after all styles are applied.
+        queueMicrotask(() => store.set({}));
+    }
 
     Object.assign(root.dataset, attrs);
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", vars["--o-bg"]);

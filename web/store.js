@@ -1494,6 +1494,7 @@ function newestOf(view) {
  * left the list. Until the server answers again, a kept view could show what they may no longer see.
  */
 function forgetKept() {
+    accessRevision++;
     requestedViews.clear();
 
     if (waitingForView !== undefined) {
@@ -1576,7 +1577,30 @@ addEventListener("storage", (event) => {
  * Whose sessions these are, and what they may see: a person's id, role, and shared sessions. What the device kept for
  * another, or before this person's rights changed, is not shown.
  */
-const ownerOf = (me) => fingerprint(JSON.stringify([me.id, me.role, me.sessions ?? null]));
+const accessOf = (me) => JSON.stringify([me.id, me.role, me.sessions ?? null]);
+const ownerOf = (me) => fingerprint(accessOf(me));
+
+const accessKeys = new WeakMap();
+let accessRevision = 0;
+let pagePerson;
+
+/** Scope rendered content to the same person and rights, including an early view checked against the signed-in page. */
+export function renderAccess() {
+    const me =
+        store.state.me === undefined
+            ? (pagePerson ??= knownFromPage()?.user ?? null)
+            : store.state.me;
+
+    if (me === null) {
+        return "";
+    }
+
+    if (!accessKeys.has(me)) {
+        accessKeys.set(me, accessOf(me));
+    }
+
+    return `${accessRevision}:${accessKeys.get(me)}`;
+}
 
 // A tab's reading places survive reload without writing another whole view. The shared cache is still a fallback.
 const TAB_PLACES = "pocket.transcriptPlaces";
