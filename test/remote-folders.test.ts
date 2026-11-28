@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { err, FileError, type FileInfo, ok } from "@earendil-works/pi-durable/env";
@@ -28,7 +28,7 @@ import {
 /** The remote computer's repository, and a file beside it that a guest must not reach. */
 const there = join(root, "there");
 const outside = join(root, "outside.txt");
-/** The computer's file manager: a fake `gdbus` first on its PATH records what it was asked to show. */
+/** A fake file manager first on the runner's PATH records what it was asked to show. */
 const fakeBin = join(root, "fake-bin");
 const revealed = join(root, "revealed.txt");
 /** The first bytes of a PNG, which is all the image route checks. */
@@ -81,12 +81,14 @@ before(async () => {
     git("update-index", "--add", "sub/out.txt");
     git("commit", "-q", "-m", "link");
 
+    const fileManager = process.platform === "darwin" ? "open" : "gdbus";
+
     mkdirSync(fakeBin, { recursive: true });
-    writeFileSync(join(fakeBin, "gdbus"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${revealed}'\n`, {
+    writeFileSync(join(fakeBin, fileManager), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${revealed}'\n`, {
         mode: 0o755,
     });
-    // The runner's daemon starts with this PATH: its commands find the fake first.
-    process.env.PATH = `${fakeBin}:${process.env.PATH ?? ""}`;
+    // Do not open the real file manager: Finder can add .DS_Store to the test repository.
+    process.env.PATH = `${fakeBin}${delimiter}${process.env.PATH ?? ""}`;
 
     app = await openApp(scriptedModel());
     app.config.lastModel ??= { provider: "faux", modelId: "faux-1", thinkingLevel: "off" };
@@ -138,8 +140,15 @@ describe("a session's folder on another computer", () => {
 
         const lines = readFileSync(revealed, "utf8").trim().split("\n");
 
-        assert.match(lines[0]!, /FileManager1\.ShowItems \['file:\/\/[^']*\/there\/sub\/b\.txt'\]/);
-        assert.match(lines[1]!, /FileManager1\.ShowFolders \['file:\/\/[^']*\/there\/sub'\]/);
+        if (process.platform === "darwin") {
+            assert.deepEqual(lines, [`-R ${join(there, "sub/b.txt")}`, join(there, "sub")]);
+        } else {
+            assert.match(
+                lines[0]!,
+                /FileManager1\.ShowItems \['file:\/\/[^']*\/there\/sub\/b\.txt'\]/,
+            );
+            assert.match(lines[1]!, /FileManager1\.ShowFolders \['file:\/\/[^']*\/there\/sub'\]/);
+        }
 
         const missing = await failure(app.workspace.reveal(owner(app), id, "nope.txt"));
 

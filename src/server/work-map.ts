@@ -38,8 +38,29 @@ const WRITE_TOOLS = /(^|_)(write|edit|wet_edit|promote_write|multi_edit|apply_pa
 /** A shell command that changes files or history: git's own, redirects into a file, and moves or deletes. */
 const WRITE_COMMAND =
     /\bgit\b[^|;&\n]*\b(commit|push|checkout\s+-b|switch\s+-c|merge|rebase|cherry-pick|reset|stash|apply|am)\b|>\s*["']?\/|\bsed\s+-i|\bmv\s|\brm\s|\bcp\s|\btee\s/;
-/** Absolute paths in a call's arguments: a home folder's, a temporary folder's, or one under /srv, /opt, or /workspace. */
-const PATHS = /(?:~|\/(?:home|Users|root|tmp|srv|opt|workspace|mnt|var\/tmp))(?:\/[\w.@+-]+)+/g;
+/** Absolute paths in a call's arguments: home and temporary folders, project folders, and mounted volumes. */
+const PATHS =
+    /(?:~|\/(?:home|Users|root|tmp|srv|opt|workspace|mnt|var\/tmp|(?:private\/)?var\/folders|private\/tmp|Volumes))(?:\/[\w.@+-]+)+/g;
+
+/** The distinct worktrees named by paths in a tool call's JSON arguments. */
+export function worktreesInCall(
+    text: string,
+    home: string,
+    worktreeOf: (path: string) => string | null,
+): Set<string> {
+    const seen = new Set<string>();
+
+    for (const match of text.matchAll(PATHS)) {
+        const path = match[0].startsWith("~") ? home + match[0].slice(1) : match[0];
+        const folder = worktreeOf(path);
+
+        if (folder !== null) {
+            seen.add(folder);
+        }
+    }
+
+    return seen;
+}
 
 /** One session's work in one worktree: per hour (since 1970, so it stays put as the window moves), reads and writes. */
 type Touch = { hours: Map<number, [number, number]> };
@@ -369,17 +390,9 @@ export class WorkMaps {
             // A script that calls the edit or write tool, or runs such a command.
             (/codemode/i.test(name) &&
                 (/tools\.\w*(write|edit)\w*\(/i.test(text) || WRITE_COMMAND.test(text)));
-        const seen = new Set<string>();
-        const home = process.env.HOME ?? "";
-
-        for (const match of text.matchAll(PATHS)) {
-            const path = match[0].startsWith("~") ? home + match[0].slice(1) : match[0];
-            const folder = this.#worktreeOf(path);
-
-            if (folder !== null) {
-                seen.add(folder);
-            }
-        }
+        const seen = worktreesInCall(text, process.env.HOME ?? "", (path) =>
+            this.#worktreeOf(path),
+        );
 
         if (
             seen.size === 0 &&

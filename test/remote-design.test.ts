@@ -13,6 +13,7 @@ import type { ConversationId } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { Runner } from "../packages/runner/src/runner.ts";
 import type { PocketHost } from "../src/server/host.ts";
+import { findBrowser } from "../src/server/browser/discovery.ts";
 import { designTools } from "../src/server/design/index.ts";
 import { designGuide } from "../src/server/design/guide.ts";
 import { withDesignMirror, MIRROR_BYTES } from "../src/server/design/mirror.ts";
@@ -150,10 +151,17 @@ describe("design on a real runner", () => {
         assert.match(readFileSync(join(there, ".pi/design/dist/tokens.css"), "utf8"), /#fedcba/);
     });
 
-    it("renders a preview with server Chromium and exports both from the tool and from the panel", async () => {
-        const preview = await call("design_preview", { id: "remote", width: 390, height: 844 });
+    it(
+        "renders a preview with server Chromium",
+        { skip: findBrowser() === undefined ? "no Chromium-based browser on this machine" : false },
+        async () => {
+            const preview = await call("design_preview", { id: "remote", width: 390, height: 844 });
 
-        assert.equal(preview.output?.filter((part) => part.type === "image").length, 2);
+            assert.equal(preview.output?.filter((part) => part.type === "image").length, 2);
+        },
+    );
+
+    it("exports HTML both from the tool and from the panel", async () => {
         const exported = await call("design_export", {
             id: "remote",
             format: "html",
@@ -201,6 +209,7 @@ describe("design on a real runner", () => {
             call("design_export", { id: "remote", format: "html", path: "../escape.zip" }),
             /inside the session folder/,
         );
+        await mkdir(join(there, "exports"), { recursive: true });
         await symlink(root, join(there, "exports/escape"));
         await assert.rejects(
             call("design_export", { id: "remote", format: "html", path: "exports/escape/bad.zip" }),
