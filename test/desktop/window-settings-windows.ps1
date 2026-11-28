@@ -12,6 +12,17 @@ function Signed-In($app) {
     (Session-Window $app) -and (Test-Path $log) -and (Select-String -Quiet -SimpleMatch '/api/me answered 200.' $log)
 }
 
+function Backdrop-Capture($name, $main, $kind) {
+    Wait-For "apply DWM backdrop $kind" { [NativeWindowFixture]::Backdrop($main) -eq $kind }
+    [void][NativeWindowFixture]::SetForegroundWindow($main)
+    if ([NativeWindowFixture]::GetForegroundWindow() -ne $main) {
+        [NativeWindowFixture]::Click($main, 166, 158)
+        Wait-For 'focus the session for the backdrop capture' { [NativeWindowFixture]::GetForegroundWindow() -eq $main }
+    }
+    Start-Sleep -Seconds 2
+    Screenshot $name
+}
+
 function Local-Ready {
     try {
         if (-not (Test-Path $running)) { return $false }
@@ -32,7 +43,10 @@ try {
     Write-Host "Windows transparency setting (registry read-back, EnableTransparency DWORD): $transparency"
     if ($transparency -ne 1) { throw 'The runner did not enable transparency effects' }
     [NativeWindowFixture]::RefreshDesktopColors()
-    Write-Host "Remote Desktop session: $([System.Windows.Forms.SystemInformation]::TerminalServerSession)"
+    $os = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $effects = "Windows $($os.CurrentBuildNumber).$($os.UBR); Transparency effects: $transparency; High contrast: $([System.Windows.Forms.SystemInformation]::HighContrast); Remote Desktop: $([System.Windows.Forms.SystemInformation]::TerminalServerSession)"
+    Write-Host $effects
+    $effects | Set-Content (Join-Path $out 'material-environment.txt')
     # Keep the runner console and Explorer behind the wallpaper captures.
     (New-Object -ComObject Shell.Application).MinimizeAll()
     foreach ($mode in @('light', 'dark')) {
@@ -81,10 +95,6 @@ try {
             [NativeWindowFixture]::Click($handle, 350, 323)
             [System.Windows.Forms.SendKeys]::SendWait('^a28{TAB}')
             Wait-For 'save opacity' { Saved 'appearance' 'opacity' 28 }
-            Settings-Select $handle 398 '{END}'
-            Wait-For 'apply Mica' { (Saved 'appearance' 'material' 'mica') -and [NativeWindowFixture]::Backdrop($main) -eq 2 }
-            Settings-Select $handle 398 '{HOME}'
-            Wait-For 'restore Acrylic' { (Saved 'appearance' 'material' 'acrylic') -and [NativeWindowFixture]::Backdrop($main) -eq 3 }
             Screenshot 'desktop-settings-appearance'
             [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
             Wait-For 'return to Pi Pocket' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
@@ -95,13 +105,37 @@ try {
             [System.Windows.Forms.SendKeys]::SendWait('^+p')
             Wait-For 'show Pi Pocket with the global shortcut' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
         }
-        if ([NativeWindowFixture]::Backdrop($main) -ne 3 -or [NativeWindowFixture]::FrameTop($main) -ge 20) { throw 'The restored window does not use Seamless and Acrylic' }
-        if ([NativeWindowFixture]::GetForegroundWindow() -ne $main) {
-            [NativeWindowFixture]::Click($main, 166, 158) # Focus the session, not the desktop behind it.
-            Wait-For 'focus the window for the Acrylic capture' { [NativeWindowFixture]::GetForegroundWindow() -eq $main }
+        if ([NativeWindowFixture]::FrameTop($main) -ge 20) { throw 'The restored window does not use Seamless' }
+        if ($mode -eq 'light') {
+            $runtimePath = (Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe' AND ParentProcessId = $($app.Id)" |
+                Select-Object -First 1).ExecutablePath
+            if (-not $runtimePath) { $runtimePath = (Get-Process msedgewebview2 | Select-Object -First 1).Path }
+            $runtime = "WebView2 Runtime: $((Get-Item -LiteralPath $runtimePath).VersionInfo.ProductVersion)"
+            Write-Host $runtime
+            $runtime | Add-Content (Join-Path $out 'material-environment.txt')
         }
-        Start-Sleep -Seconds 2
-        Screenshot "seamless-see-through-$mode"
+        # Each comparison uses the same page, window position, focus, wallpaper and opacity.
+        Backdrop-Capture "seamless-see-through-$mode" $main 3
+        $handle = Open-Settings $app $main
+        [NativeWindowFixture]::Click($handle, 75, 327) # Appearance
+        Settings-Select $handle 398 '{END}'
+        Wait-For 'save Mica' { Saved 'appearance' 'material' 'mica' }
+        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+        Wait-For 'return to Pi Pocket' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
+        Backdrop-Capture "seamless-mica-$mode" $main 2
+        $handle = Open-Settings $app $main
+        [NativeWindowFixture]::Click($handle, 75, 327)
+        Settings-Select $handle 398 '{HOME}'
+        Wait-For 'save Acrylic' { Saved 'appearance' 'material' 'acrylic' }
+        [NativeWindowFixture]::Click($handle, 266, 253)
+        Wait-For 'save See-through off' { Saved 'appearance' 'transparent' $false }
+        [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+        Wait-For 'return to Pi Pocket' { [NativeWindowFixture]::Windows($app.Id).Length -eq 1 }
+        Backdrop-Capture "seamless-opaque-$mode" $main 1
+        $handle = Open-Settings $app $main
+        [NativeWindowFixture]::Click($handle, 75, 327)
+        [NativeWindowFixture]::Click($handle, 266, 253)
+        Wait-For 'restore See-through for the next capture' { Saved 'appearance' 'transparent' $true }
         Request-Quit
         Wait-For 'quit the screenshot app' { $app.Refresh(); $app.HasExited }
     }
