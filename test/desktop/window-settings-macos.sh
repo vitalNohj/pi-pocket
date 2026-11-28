@@ -20,6 +20,14 @@ settings_material() {
     drive escape
     wait_for 'return to Pi Pocket' 15 has_windows 1
 }
+settings_see_through() {
+    settings_open
+    settings_click 75 327
+    settings_click 266 253
+    wait_for "save See-through background $1" 10 saved appearance transparent "$1"
+    drive escape
+    wait_for 'return to Pi Pocket' 15 has_windows 1
+}
 local_ready() {
     local address
     address="$(plutil -extract url raw "$PI_POCKET_DIR/launcher-running.json" 2>/dev/null)" || return 1
@@ -41,7 +49,11 @@ quit_fixture_app() {
 defaults export com.apple.universalaccess "$RUNNER_TEMP/window-display-export.plist" 2>/dev/null || true
 defaults write com.apple.universalaccess reduceTransparency -bool false
 defaults write com.apple.universalaccess increaseContrast -bool false
-bounded 10 "$driver" 0 display-effects
+{
+    sw_vers
+    uname -m
+    bounded 10 "$driver" 0 display-effects
+} > "$out/material-environment.txt"
 bounded 10 node "$here/window-evidence.mjs" wallpaper "$bmp"
 sips -s format png "$bmp" --out "$wallpaper" >/dev/null
 bounded 10 "$driver" 0 wallpaper "$wallpaper"
@@ -112,6 +124,15 @@ for mode in light dark; do
     settings_material sidebar 125
     sleep 2
     shot "seamless-see-through-sidebar-$mode"
+    # Capture a native-chrome session sheet over the active material before the opaque comparison.
+    drive key 45 command # New Session
+    sleep 2
+    shot "seamless-see-through-sheet-$mode"
+    drive escape
+    settings_see_through false
+    sleep 2
+    shot "seamless-opaque-$mode"
+    settings_see_through true
     quit_fixture_app
 done
 

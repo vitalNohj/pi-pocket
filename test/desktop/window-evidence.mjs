@@ -1,5 +1,6 @@
 // Prepare only the disposable installer smoke. The screenshot still shows the installed Pi Pocket page.
 import { readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 
 const [command, file, mode] = process.argv.slice(2);
 
@@ -66,6 +67,39 @@ if (command === "theme" && ["dark", "light"].includes(mode)) {
     }
 
     writeFileSync(file, bmp);
+} else if (command === "alternate-origin") {
+    async function listen(serve) {
+        const server = createServer(serve);
+
+        await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+        return `http://127.0.0.1:${server.address().port}`;
+    }
+
+    // Simulate a verified server sending the app to a permitted sign-in origin. There is no sign-in,
+    // and this page leaves the background clear so the native opaque fallback has to paint it.
+    const signIn = await listen((request, response) => {
+        if (request.url === "/displayed") {
+            writeFileSync(`${file}.displayed`, "The alternate-origin page loaded in WebView2.\n");
+            response.writeHead(204).end();
+        } else {
+            response.writeHead(200, { "Content-Type": "text/html" }).end(`<!doctype html>
+                <title>Fixture sign-in</title><h1>Fixture sign-in</h1><p>No credentials needed.</p>
+                <script>fetch('/displayed')</script>`);
+        }
+    });
+    const remoteAddress = await listen((request, response) => {
+        if (request.url === "/api/pocket/info") {
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ name: "pi-pocket", bridge: 1 }));
+        } else {
+            response.writeHead(302, { Location: signIn }).end();
+        }
+    });
+
+    writeFileSync(file, JSON.stringify({ remoteAddress, allowedOrigins: [signIn] }));
 } else {
-    throw new Error("Use wallpaper <file> or theme <installed index.html> <dark|light>");
+    throw new Error(
+        "Use wallpaper <file>, theme <installed index.html> <dark|light>, or alternate-origin <file>",
+    );
 }
