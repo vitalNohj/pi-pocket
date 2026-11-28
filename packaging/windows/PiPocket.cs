@@ -693,11 +693,13 @@ namespace PiPocket
             bool selected = RecoveryTarget == previous;
             PocketWindow made = MakePageWindow(entry, boundsFile, previous.Profile, attempt);
             made.CopyWindowState(previous);
-            previous.Dispose();
+            popups.Remove(previous);
+            bool keepingProfile = made.TakeProfileFrom(previous);
             if (selected) { lastPageWindow = made; }
             if (focused) { made.ShowWindow(); }
             else if (shown) { made.ShowInBackground(); }
             else { GC.KeepAlive(made.Handle); }
+            if (keepingProfile) { previous.Hide(); }
             ReportPage(made);
             await LoadPage(made, target);
         }

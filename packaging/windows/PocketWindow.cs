@@ -36,13 +36,14 @@ namespace PiPocket
         long attemptAt, answeredAt, lastTick, readyAt = -1;
         int attempt, epoch;
         bool watching, initialized, documentReady, sawReady, checkPending, processExited, browserExited, blocked;
-        bool showWithoutActivation;
+        bool showWithoutActivation, retired;
         string recoveryAddress;
+        PocketWindow profileKeeper;
         internal readonly ShellWebProfile Profile;
         internal string RecoveryState { get; private set; }
         internal string CommittedOrigin { get { return committedOrigin; } }
         internal bool IsMain { get { return boundsFile != null; } }
-        internal bool IsCurrent { get { return !IsDisposed && !Disposing && generation == host.PageGeneration; } }
+        internal bool IsCurrent { get { return !retired && !IsDisposed && !Disposing && generation == host.PageGeneration; } }
         internal int RecoveryEpoch { get { return epoch; } }
 
         public PocketWindow(TrayApp host, string address, Icon icon, string boundsFile, ShellWebProfile profile, int attempt = 0)
@@ -86,6 +87,7 @@ namespace PiPocket
             recoveryTimer.Start();
             await host.InitializeWebView(view, Profile);
             if (!IsCurrent) { return; }
+            ReleaseProfileKeeper();
             CoreWebView2 core = Browser;
             core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = host.NativeDeveloperTools;
@@ -125,10 +127,14 @@ namespace PiPocket
                 if (!processExited) { host.WriteWebViewLog("Page recovery (" + Role + "): renderer exited."); }
                 processExited = true;
                 browserExited |= args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited;
-                // Recover outside the callback. The old controller must be disposed before creating a new one.
+                // Recover outside the callback, after the engine reports the exit to its other views.
                 if (RecoveryState != "failed") { PresentRecovery("hung", "The page is not responding. Reload it or open Desktop Settings."); }
             };
-            core.NewWindowRequested += host.NewWindowRequested;
+            core.NewWindowRequested += delegate (object sender, CoreWebView2NewWindowRequestedEventArgs args)
+            {
+                if (IsCurrent) { host.NewWindowRequested(sender, args); }
+                else { args.Handled = true; }
+            };
             core.WindowCloseRequested += delegate { if (IsCurrent) { BeginInvoke((MethodInvoker)Close); } };
 
             if (IsMain && bridgeEnabled) { core.WebResourceResponseReceived += CheckSignIn; }
@@ -392,6 +398,37 @@ namespace PiPocket
             WindowState = previous.WindowState;
         }
 
+        internal bool TakeProfileFrom(PocketWindow previous)
+        {
+            // Closing the last live controller can end the browser session and its temporary cookies.
+            // Keep one live controller until the new one is ready. Do not keep a dead browser controller.
+            if (!previous.browserExited && previous.Browser != null)
+            {
+                previous.retired = true;
+                previous.recoveryTimer.Stop();
+                if (previous.bridge != null) { previous.bridge.Navigating(0); }
+                previous.DetachDictation();
+                previous.ReleaseProfileKeeper();
+                profileKeeper = previous;
+                return true;
+            }
+
+            if (!previous.browserExited)
+            {
+                profileKeeper = previous.profileKeeper;
+                previous.profileKeeper = null;
+            }
+            previous.Dispose();
+            return false;
+        }
+
+        void ReleaseProfileKeeper()
+        {
+            PocketWindow keeper = profileKeeper;
+            profileKeeper = null;
+            if (keeper != null) { keeper.Dispose(); }
+        }
+
         protected override bool ShowWithoutActivation { get { return showWithoutActivation; } }
 
         internal void ShowInBackground()
@@ -418,6 +455,7 @@ namespace PiPocket
 
         void PublishVisibility()
         {
+            if (!IsCurrent) { return; }
             if (boundsFile != null) { host.Report("visibility", ShownToUser); }
             if (bridge != null) { bridge.Visibility(); }
         }
@@ -523,8 +561,10 @@ namespace PiPocket
         {
             if (disposing)
             {
+                retired = true;
                 watching = false;
                 recoveryTimer.Dispose();
+                ReleaseProfileKeeper();
                 if (downloads != null) { downloads.Dispose(); downloads = null; }
                 if (viewClip != null) { viewClip.Dispose(); viewClip = null; }
             }

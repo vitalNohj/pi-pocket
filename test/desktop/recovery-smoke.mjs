@@ -54,7 +54,9 @@ const fixture = createServer((req, res) => {
         return;
     }
 
-    if (path === base && count === 2) {
+    const seedCookie = path === base && count === 2;
+
+    if (seedCookie) {
         res.setHeader("Set-Cookie", "recovery=fixture; Path=/recovery; HttpOnly; SameSite=Lax");
     }
 
@@ -62,7 +64,8 @@ const fixture = createServer((req, res) => {
     const fail = path === `${base}/s/8` && outage;
     const exit = path === `${base}/s/7` && count === 1;
     const body = boot
-        ? '<p data-part="boot">Fixture startup screen</p>'
+        ? `<p data-part="boot">Fixture startup screen</p>
+           ${seedCookie ? `<script>fetch('${base}/cookie-check')</script>` : ""}`
         : `<h1>${path === "/replacement" ? "Replacement fixture view" : "Recovery fixture page"}</h1>
            <p>${cookie ? "Fixture sign-in retained" : "No fixture sign-in"}</p>
            ${path === base ? `<button onclick="open('${base}/s/7')">Open extra fixture view</button>` : ""}
@@ -178,6 +181,11 @@ try {
         "Page recovery (main): stopped.",
     ]);
     assert.equal(visits(base).length, 3);
+    assert.equal(
+        visits(`${base}/cookie-check`)[0]?.cookie,
+        true,
+        "the first retry set a session cookie",
+    );
     assert.equal(visits(base)[2].cookie, true, "the replacement uses the same remote cookie store");
     await gui("expect-prefix", pageTitle, "The page could not recover.");
     await shot(pageTitle, "recovery-budget-spent");
@@ -258,7 +266,11 @@ try {
     await until("Quit ended the installed app", exited, 15_000);
     console.log("Switching cancelled the old view's retry. Reload on fresh Home opened no server.");
 } catch (error) {
-    console.error("Recovery fixture requests:", JSON.stringify(requests));
+    console.error(
+        "Recovery fixture page requests:",
+        JSON.stringify(requests.filter(({ path }) => !path.endsWith("/api/pocket/info"))),
+    );
+
     throw error;
 } finally {
     if (pid && !exited()) {
