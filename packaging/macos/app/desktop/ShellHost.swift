@@ -438,10 +438,12 @@ extension AppDelegate {
     }
 
     private func retryPageNavigation(_ view: WKWebView, _ recovery: PageRecovery) {
-        let reloadInPlace = safeRecoveryAddress(view.url, recovery) == recovery.address
+        // WKWebView.url can be the provisional URL. Reload needs a current history item.
+        let reloadInPlace = safeRecoveryAddress(view.backForwardList.currentItem?.url, recovery) == recovery.address &&
+            safeRecoveryAddress(view.url, recovery) == recovery.address
         beginPageAttempt(view, recovery)
         view.stopLoading()
-        // Keep the native history for the first attempt. Do not replay an SSO or one-time sign-in URL.
+        // Keep the native history for a loaded page. Do not replay an SSO or one-time sign-in URL.
         if reloadInPlace, view.reload() != nil { return }
         view.load(URLRequest(url: recovery.address))
     }
