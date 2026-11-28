@@ -276,9 +276,8 @@ namespace PiPocket
         bool openWhenReady;
         readonly bool loginLaunch;
         volatile bool quitting;
-        bool openingWindow;
         bool edgeFallback;
-        PocketWindow window;
+        PocketWindow window, lastPageWindow;
         readonly List<PocketWindow> popups = new List<PocketWindow>();
         internal readonly BridgeWindows Bridge;
         readonly Icon baseIcon;
@@ -617,29 +616,29 @@ namespace PiPocket
                 return;
             }
 
-            if (openingWindow)
-            {
-                return;
-            }
+            PocketWindow made = MakePageWindow(pageAddress, Path.Combine(appDir, "window-bounds.txt"), SessionWebProfile);
+            made.ShowWindow();
+            await LoadPage(made, pageAddress, signIn: localPage);
+        }
 
-            openingWindow = true;
-            int generation = pageGeneration;
-            PocketWindow made = null;
-
+        async Task LoadPage(PocketWindow made, string target, bool signIn = false)
+        {
             try
             {
-                made = new PocketWindow(this, pageAddress, baseIcon, Path.Combine(appDir, "window-bounds.txt"));
-                window = made;
-                made.Disposed += delegate { if (window == made) { window = null; } };
-                made.ShowWindow();
-                await made.Initialize(SessionWebProfile);
-                if (quitting || made.IsDisposed || generation != pageGeneration) { return; }
-                string target = localPage ? await Task.Run(() => LocalSignInAddress(url, localPid)) : pageAddress;
-                if (!quitting && !made.IsDisposed && generation == pageGeneration) { made.Browser.Navigate(target); }
+                await made.Initialize();
+                if (quitting || !made.IsCurrent) { return; }
+                int token = made.RecoveryEpoch;
+                if (signIn)
+                {
+                    string server = url;
+                    int pid = localPid;
+                    target = await Task.Run(() => LocalSignInAddress(server, pid));
+                }
+                if (!quitting) { made.NavigateInitial(target, token); }
             }
             catch (WebView2RuntimeNotFoundException)
             {
-                if (generation == pageGeneration && !quitting)
+                if (made.IsCurrent && made.IsMain && !quitting)
                 {
                     CloseWindows();
                     edgeFallback = true;
@@ -649,33 +648,58 @@ namespace PiPocket
             }
             catch (Exception error)
             {
-                if (generation == pageGeneration && !quitting)
+                if (!quitting && made.IsCurrent)
                 {
-                    CloseWindows();
                     Log("Could not open the WebView2 window (" + error.GetType().Name + ").");
-                    OpenSettings("home");
+                    made.InitializationFailed();
                 }
-            }
-            finally
-            {
-                openingWindow = false;
-                if (!quitting && ready && generation != pageGeneration && window == null) { OpenWindow(); }
             }
         }
 
-        PocketWindow MakeExtraWindow()
+        PocketWindow MakePageWindow(string address, string boundsFile, ShellWebProfile profile, int attempt = 0)
         {
-            PocketWindow made = new PocketWindow(this, pageAddress, baseIcon, null);
-            popups.Add(made);
-            made.Activated += delegate { if (popups.Remove(made)) { popups.Add(made); } };
-            made.FormClosed += delegate
+            PocketWindow made = new PocketWindow(this, address, baseIcon, boundsFile, profile, attempt);
+            if (made.IsMain) { window = made; }
+            else
             {
-                int generation = pageGeneration;
-                OnUi(delegate { if (generation == pageGeneration && window == null && popups.Count == 0 && settings == null) { Quit(); } });
+                popups.Add(made);
+                made.FormClosed += delegate
+                {
+                    int generation = pageGeneration;
+                    OnUi(delegate { if (generation == pageGeneration && window == null && popups.Count == 0 && settings == null) { Quit(); } });
+                };
+            }
+            made.Activated += delegate
+            {
+                if (popups.Remove(made)) { popups.Add(made); }
+                lastPageWindow = made;
+                ReportPage(made);
             };
-            made.Disposed += delegate { popups.Remove(made); };
-            made.ShowWindow();
+            made.Disposed += delegate
+            {
+                if (window == made) { window = null; }
+                if (lastPageWindow == made) { lastPageWindow = null; }
+                popups.Remove(made);
+                ReportPage(RecoveryTarget);
+            };
             return made;
+        }
+
+        internal async void RecreatePage(PocketWindow previous, string entry, string target, string boundsFile, int attempt)
+        {
+            if (quitting || !previous.IsCurrent) { return; }
+            bool shown = previous.Visible;
+            bool focused = previous.IsForeground;
+            bool selected = RecoveryTarget == previous;
+            PocketWindow made = MakePageWindow(entry, boundsFile, previous.Profile, attempt);
+            made.CopyWindowState(previous);
+            previous.Dispose();
+            if (selected) { lastPageWindow = made; }
+            if (focused) { made.ShowWindow(); }
+            else if (shown) { made.ShowInBackground(); }
+            else { GC.KeepAlive(made.Handle); }
+            ReportPage(made);
+            await LoadPage(made, target);
         }
 
         PocketWindow ActivePocketWindow
@@ -686,13 +710,9 @@ namespace PiPocket
         async Task NewSessionWindow()
         {
             if (!ready || quitting) { return; }
-            PocketWindow made = MakeExtraWindow();
-            try
-            {
-                await made.Initialize(SessionWebProfile);
-                if (!quitting && !made.IsDisposed) { made.Browser.Navigate(pageAddress); }
-            }
-            catch (Exception) { made.Dispose(); }
+            PocketWindow made = MakePageWindow(pageAddress, null, SessionWebProfile);
+            made.ShowWindow();
+            await LoadPage(made, pageAddress);
         }
 
         internal async void NewWindowRequested(object sender, CoreWebView2NewWindowRequestedEventArgs args)
@@ -719,10 +739,12 @@ namespace PiPocket
 
             try
             {
-                popup = MakeExtraWindow();
-                await popup.Initialize(SessionWebProfile);
+                popup = MakePageWindow(pageAddress, null, SessionWebProfile);
+                popup.PrepareRecoveryAddress(args.Uri);
+                popup.ShowWindow();
+                await popup.Initialize();
 
-                if (!quitting && !popup.IsDisposed)
+                if (!quitting && popup.IsCurrent)
                 {
                     // It must share the same environment and profile, and not have navigated yet.
                     args.NewWindow = popup.Browser;
@@ -730,14 +752,10 @@ namespace PiPocket
             }
             catch (Exception)
             {
-                if (popup != null)
-                {
-                    popup.Dispose();
-                }
-
-                if (!quitting)
+                if (!quitting && popup != null && popup.IsCurrent)
                 {
                     Log("Could not open a second WebView2 window.");
+                    popup.InitializationFailed();
                 }
             }
             finally

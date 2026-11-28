@@ -100,6 +100,8 @@ static class WindowInput
                     SendKeys.SendWait(code);
                     break;
                 case "new": SendKeys.SendWait("^n"); break;
+                case "reload": SendKeys.SendWait("^r"); break;
+                case "settings": SendKeys.SendWait("^,"); break;
                 case "chooseNext": SendKeys.SendWait("{DOWN}{ENTER}"); break;
                 case "selectAll": SendKeys.SendWait("^a"); break;
                 case "select-file":

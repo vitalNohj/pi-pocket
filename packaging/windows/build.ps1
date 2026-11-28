@@ -147,6 +147,7 @@ $compile = @(
     "/resource:$bootstrap,PocketBridge.js", "/resource:$windowScript,PiPocket.Window.js",
     $sourceFile, (Join-Path $PSScriptRoot 'PocketWindow.cs')
 ) + $contractReferences + $desktopSources
+if ($TestBridge) { $compile += '/define:DESKTOP_RECOVERY_SMOKE' }
 & $csc /target:winexe "/out:$appExe" "/win32icon:$(Join-Path $PSScriptRoot 'pi-pocket.ico')" `
     "/win32manifest:$(Join-Path $PSScriptRoot 'PiPocket.manifest')" @compile
 

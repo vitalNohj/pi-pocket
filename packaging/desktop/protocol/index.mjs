@@ -47,6 +47,16 @@ export const WINDOW_ACTIONS = Object.freeze([
     "notifications.systemSettings",
 ]);
 
+// The native host reports only the selected session view. Recovery itself stays per view.
+export const PAGE_RECOVERY = Object.freeze([
+    "none",
+    "loading",
+    "ready",
+    "recovering",
+    "hung",
+    "failed",
+]);
+
 export const HOST_EVENTS = Object.freeze([
     "local",
     "page",
@@ -180,7 +190,15 @@ export function menuModel(state) {
         item("window.open", badge ? `Open Pi Pocket (${badge} need you)` : "Open Pi Pocket"),
         session,
         newWindow,
-        item("window.reload", state.page.hung ? "Reload (page not responding)" : "Reload", page),
+        item(
+            "window.reload",
+            state.page.hung
+                ? "Reload (page not responding)"
+                : state.page.recovery === "failed"
+                  ? "Reload (page could not load)"
+                  : "Reload",
+            page,
+        ),
         ...pinned,
         { separator: true },
         runner,

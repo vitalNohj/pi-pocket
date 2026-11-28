@@ -8,6 +8,7 @@ import {
     menuModel,
     onlyKeys,
     packet,
+    PAGE_RECOVERY,
     PIN_GLYPHS,
 } from "../protocol/index.mjs";
 import { choice, initialState, materials, preferenceRules } from "../protocol/state.mjs";
@@ -471,12 +472,24 @@ export class DesktopController {
         } else if (isRecord(data) && this.#state.home.active?.generation === data.generation) {
             if (
                 event === "page" &&
-                onlyKeys(data, ["generation", "committedOrigin", "hung"]) &&
+                onlyKeys(data, ["generation", "committedOrigin", "hung", "recovery"]) &&
                 (data.committedOrigin === null || signInOrigin(data.committedOrigin)) &&
-                (data.hung === undefined || typeof data.hung === "boolean")
+                (data.hung === undefined || typeof data.hung === "boolean") &&
+                (data.recovery === undefined || PAGE_RECOVERY.includes(data.recovery))
             ) {
-                page.committedOrigin = data.committedOrigin;
-                page.hung = data.hung ?? false;
+                const hung =
+                    data.recovery === undefined ? (data.hung ?? false) : data.recovery === "hung";
+                const recovery = data.recovery ?? "none";
+
+                if (
+                    page.recovery === recovery &&
+                    page.committedOrigin === data.committedOrigin &&
+                    page.hung === hung
+                ) {
+                    return true;
+                }
+
+                Object.assign(page, { committedOrigin: data.committedOrigin, hung, recovery });
             } else if (
                 event === "pins" &&
                 onlyKeys(data, ["generation", "feed", "items"]) &&
@@ -717,6 +730,7 @@ export class DesktopController {
             pinFeed: null,
             badge: 0,
             hung: false,
+            recovery: "none",
         });
         this.#publish();
         this.#monitor();
@@ -783,6 +797,8 @@ export class DesktopController {
                 pinFeed: null,
                 badge: 0,
                 committedOrigin: null,
+                hung: false,
+                recovery: "none",
             });
             this.#publish();
             this.#monitor();
@@ -844,7 +860,12 @@ export class DesktopController {
                 const generation = ++this.#generation;
 
                 Object.assign(active, { kind: match.kind, bridge: match.bridge, generation });
-                this.#state.page.generation = generation;
+                Object.assign(this.#state.page, {
+                    generation,
+                    committedOrigin: null,
+                    hung: false,
+                    recovery: "none",
+                });
             }
 
             active.status = "connected";
