@@ -257,7 +257,8 @@ async function testStartupRetry() {
             "startup retry was active before switching servers",
             () => probes() >= switching.probes + 2,
         );
-        await gui("click", settingsTitle, 390, 384); // The saved Server address field.
+        await shown("Retry now");
+        await gui(windows ? "press" : "focus-field", settingsTitle, "Server address");
         await gui("selectAll", settingsTitle);
         await gui("type", settingsTitle, other.address);
         await gui("expect-field", settingsTitle, other.address);
