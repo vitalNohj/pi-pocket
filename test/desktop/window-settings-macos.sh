@@ -12,6 +12,14 @@ saved() { [ "$(plutil -extract "preferences.$1.$2" raw "$PI_POCKET_DESKTOP_STATE
 settings_click() { drive click "$1" "$(( $2 + 28 ))"; }
 settings_select() { settings_click 450 "$1"; drive key "$2"; drive key 36; }
 settings_open() { drive key 43 command; wait_for 'open Desktop Settings' 15 has_windows 2; sleep 2; }
+settings_material() {
+    settings_open
+    settings_click 75 327
+    settings_select 390 "$2"
+    wait_for "save $1 material for the capture" 10 saved appearance material "$1"
+    drive escape
+    wait_for 'return to Pi Pocket' 15 has_windows 1
+}
 local_ready() {
     local address
     address="$(plutil -extract url raw "$PI_POCKET_DIR/launcher-running.json" 2>/dev/null)" || return 1
@@ -96,9 +104,14 @@ for mode in light dark; do
         wait_for 'hide Pi Pocket with the global shortcut' 10 has_windows 0
         drive hotkey 35 command shift
         wait_for 'show Pi Pocket with the global shortcut' 10 has_windows 1
+    else
+        settings_material window 126 # Restore Window after the light Sidebar capture.
     fi
     sleep 2
     shot "$chrome"
+    settings_material sidebar 125
+    sleep 2
+    shot "seamless-see-through-sidebar-$mode"
     quit_fixture_app
 done
 

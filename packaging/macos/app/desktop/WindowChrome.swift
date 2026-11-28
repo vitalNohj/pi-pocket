@@ -108,7 +108,9 @@ final class WindowChrome: NSView {
         case "sidebar": effect.material = .sidebar
         case "dark": effect.material = .hudWindow
         case "full-screen": effect.material = .fullScreenUI
-        default: effect.material = .windowBackground
+        default:
+            // Match the Electron app's "under-window" material.
+            effect.material = .underWindowBackground
         }
         tint = glass ? preferences.tint : nil
         window.isOpaque = !glass
